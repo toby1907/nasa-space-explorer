@@ -147,6 +147,10 @@ async def a2a_endpoint(request: Request):
 
 async def handle_message_send(params: MessageParams):
     """Handle message/send method"""
+     # DEBUG: Log the entire request
+    print("=== DEBUG: Received A2A Request ===")
+    print(f"Full params: {params}")
+    print(f"Message parts: {params.message.parts}")
     user_message = params.message
     config = params.configuration
     
@@ -157,7 +161,12 @@ async def handle_message_send(params: MessageParams):
             user_text = part.text.lower()
             break
     
+    print(f"DEBUG: Final user_text: '{user_text}'")
     # Route based on user command
+    if not user_text:
+        user_text = "today's image"
+        print("DEBUG: No user text, defaulting to 'today's image'")
+        
     if "random" in user_text:
         nasa_data = await get_random_apod_data()
     elif "yesterday" in user_text:
