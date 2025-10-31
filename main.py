@@ -319,6 +319,8 @@ def format_nasa_response(data):
 
 {explanation}
 
+![NASA Image]({data.get('url', '')})
+
 *Details:*
 📅 Date: {date}
 🖼️ Media Type: {data.get('media_type', 'image')}
