@@ -84,6 +84,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # NASA API Configuration
 NASA_APOD_URL = "https://api.nasa.gov/planetary/apod"
 NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
