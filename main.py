@@ -265,7 +265,7 @@ async def process_message_directly(user_message, request_id):
     
     return await create_nasa_response(nasa_data, mock_user_message)  # Use the new function
 async def handle_message_send(params: MessageParams):
-    """Handle message/send - EXTRACT ONLY LATEST COMMAND"""
+    """Handle message/send - SIMPLIFIED COMMAND DETECTION"""
     print("=== DEBUG: handle_message_send called ===")
     
     # EXTRACT USER MESSAGE from text parts
@@ -277,44 +277,48 @@ async def handle_message_send(params: MessageParams):
             print(f"DEBUG: Found text in parts: '{user_text}'")
             break
     
-    # Use the command detection logic
+    # SIMPLE APPROACH: Just look for the LAST word or two
     command = "today's image"  # default
     
     if user_text:
         print(f"DEBUG: Processing user text: '{user_text}'")
         
+        # Remove any HTML tags if present
         import re
-        
-        # Remove HTML tags and clean text
-        clean_text = re.sub('<[^<]+?>', '', user_text)
-        clean_text = clean_text.replace('&nbsp;', ' ').strip()
+        clean_text = re.sub('<[^<]+?>', '', user_text).strip()
         print(f"DEBUG: Clean text: '{clean_text}'")
         
-        # CRITICAL FIX: Get only the VERY LAST message after the last <p></p>
-        # Split by <p> tags and get the content after the last closing </p>
-        segments = clean_text.split('</p>')
-        if segments:
-            last_segment = segments[-1].strip()
-            print(f"DEBUG: Last segment: '{last_segment}'")
+        # ULTRA-SIMPLE: Get the last 1-3 words as the command
+        words = clean_text.split()
+        if words:
+            # Try last 1-3 words as potential command
+            potential_commands = [
+                ' '.join(words[-3:]),  # Last 3 words
+                ' '.join(words[-2:]),  # Last 2 words  
+                words[-1]              # Last word
+            ]
             
-            # Extract the actual text (remove any remaining <p> tags)
-            actual_message = re.sub('<[^<]+?>', '', last_segment).strip()
-            print(f"DEBUG: Actual message: '{actual_message}'")
+            print(f"DEBUG: Potential commands: {potential_commands}")
             
-            # Now check only this actual message for commands
-            clean_message = actual_message.lower().replace("'", "")
-            print(f"DEBUG: Clean message for command check: '{clean_message}'")
-            
-            if "space fact" in clean_message or "random fact" in clean_message:
-                command = "space fact"
-            elif "random image" in clean_message:
-                command = "random image"
-            elif "yesterday" in clean_message:
-                command = "yesterday's image"
-            elif "today" in clean_message:
-                command = "today's image"
-            elif "help" in clean_message:
-                command = "help"
+            for potential_cmd in potential_commands:
+                clean_cmd = potential_cmd.lower().replace("'", "")
+                print(f"DEBUG: Checking: '{clean_cmd}'")
+                
+                if "space fact" in clean_cmd or "random fact" in clean_cmd:
+                    command = "space fact"
+                    break
+                elif "random image" in clean_cmd:
+                    command = "random image"
+                    break
+                elif "yesterday" in clean_cmd:
+                    command = "yesterday's image"
+                    break
+                elif "today" in clean_cmd:
+                    command = "today's image"
+                    break
+                elif "help" in clean_cmd:
+                    command = "help"
+                    break
     
     print(f"🚀 DEBUG: FINAL COMMAND: '{command}'")
     
@@ -379,41 +383,32 @@ async def handle_execute(params: ExecuteParams):
         configuration=MessageConfiguration()
     ))
 async def get_nasa_apod_data(date=None):
-    """Fetch NASA APOD data with image URL validation"""
+    """Fetch NASA APOD data with better timeout handling"""
     try:
         url = f"{NASA_APOD_URL}?api_key={NASA_API_KEY}"
         if date:
             url += f"&date={date}"
             
-        timeout = aiohttp.ClientTimeout(total=10)
+        print(f"DEBUG: Calling NASA API: {url}")
+        
+        # Shorter timeout for faster fallback
+        timeout = aiohttp.ClientTimeout(total=5)  # Reduced from 10 to 5 seconds
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
-                response.raise_for_status()
-                data = await response.json()
-                
-                # Validate image URL is accessible
-                if data.get('media_type') == 'image' and data.get('url'):
-                    image_url = data['url']
-                    print(f"DEBUG: NASA image URL: {image_url}")
-                    
-                    # Test if image URL is accessible
-                    try:
-                        async with session.head(image_url, timeout=5) as img_check:
-                            if img_check.status == 200:
-                                print("DEBUG: Image URL is accessible")
-                            else:
-                                print(f"DEBUG: Image URL might not be accessible: {img_check.status}")
-                    except Exception as e:
-                        print(f"DEBUG: Could not verify image URL: {e}")
-                
-                return data
+                if response.status == 200:
+                    data = await response.json()
+                    print(f"DEBUG: NASA API success - Title: {data.get('title')}")
+                    return data
+                else:
+                    print(f"DEBUG: NASA API error: {response.status}")
+                    return get_fallback_response()
                 
     except asyncio.TimeoutError:
-        print("ERROR: NASA API timeout")
+        print("DEBUG: NASA API timeout - using fallback")
         return get_fallback_response()
     except Exception as e:
-        print(f"ERROR fetching NASA data: {e}")
+        print(f"DEBUG: NASA API exception: {e}")
         return get_fallback_response()
 async def create_nasa_response(nasa_data, user_message):
     """Create NASA response with enhanced image display"""
