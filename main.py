@@ -7,6 +7,8 @@ from uuid import uuid4
 from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, List, Dict, Any
+import asyncio
+import aiohttp
 
 # Pydantic Models for A2A Protocol
 class MessagePart(BaseModel):
@@ -358,7 +360,7 @@ async def create_nasa_response(nasa_data, request_id):
         history=[response_message]
     )
 async def handle_message_send(params: MessageParams):
-    """Handle message/send - WITH FORCED COMMAND EXTRACTION"""
+    """Handle message/send - WITH IMPROVED COMMAND DETECTION"""
     print("=== DEBUG: handle_message_send called ===")
     
     # EXTRACT USER MESSAGE MANUALLY from the valid A2A request
@@ -373,20 +375,23 @@ async def handle_message_send(params: MessageParams):
     if user_text:
         print(f"DEBUG: Processing user text: '{user_text}'")
         
-        # BULLETPROOF COMMAND DETECTION
-        if "space fact" in user_text.lower():
-            print("🚀 DEBUG: FOUND 'space fact' - RETURNING SPACE FACT!")
+        # BULLETPROOF COMMAND DETECTION (handle apostrophes and variations)
+        clean_text = user_text.lower().replace("'", "").replace('"', '')
+        print(f"DEBUG: Clean text: '{clean_text}'")
+        
+        if "space fact" in clean_text or "random fact" in clean_text:
+            print("🚀 DEBUG: FOUND SPACE FACT COMMAND!")
             return await create_space_fact_response(params.message)
-        elif "random fact" in user_text.lower():
-            print("🚀 DEBUG: FOUND 'random fact' - RETURNING SPACE FACT!")
-            return await create_space_fact_response(params.message)
-        elif "random image" in user_text.lower():
+        elif "random image" in clean_text:
             print("DEBUG: Found 'random image'")
             nasa_data = await get_random_apod_data()
-        elif "yesterday" in user_text.lower():
+        elif "yesterday" in clean_text:
             print("DEBUG: Found 'yesterday'")
             nasa_data = await get_yesterday_apod_data()
-        elif "help" in user_text.lower():
+        elif "today" in clean_text or "todays image" in clean_text:
+            print("🚀 DEBUG: FOUND TODAY'S IMAGE COMMAND!")
+            nasa_data = await get_nasa_apod_data()
+        elif "help" in clean_text:
             print("DEBUG: Found 'help'")
             return await create_help_response(params.message)
         else:
@@ -412,25 +417,38 @@ async def handle_execute(params: ExecuteParams):
         message=user_message,
         configuration=MessageConfiguration()
     ))
-
 async def get_nasa_apod_data(date=None):
-    """Fetch NASA APOD data"""
+    """Fetch NASA APOD data with timeout"""
     try:
         url = f"{NASA_APOD_URL}?api_key={NASA_API_KEY}"
         if date:
             url += f"&date={date}"
             
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.json()
+        # Use aiohttp with timeout instead of requests
+        timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                data = await response.json()
+                return data
+                
+    except asyncio.TimeoutError:
+        print("ERROR: NASA API timeout")
+        return get_fallback_response()
     except Exception as e:
-        return {
-            "title": "Error fetching NASA data",
-            "explanation": "Could not retrieve the astronomy picture. Please try again later.",
-            "url": "",
-            "media_type": "image"
-        }
+        print(f"ERROR fetching NASA data: {e}")
+        return get_fallback_response()
 
+def get_fallback_response():
+    """Return fallback response when NASA API fails"""
+    return {
+        "title": "Space Exploration",
+        "explanation": "We're having trouble connecting to NASA's servers right now. Please try again in a moment to see amazing space images!",
+        "url": "",
+        "media_type": "image",
+        "date": "Unknown"
+    }
 async def get_random_apod_data():
     """Get random APOD from archive"""
     import random
