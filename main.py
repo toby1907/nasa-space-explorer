@@ -73,7 +73,7 @@ class JSONRPCResponse(BaseModel):
 app = FastAPI(
     title="NASA Space Explorer Agent - A2A Compliant",
     description="A fully A2A protocol compliant NASA Astronomy Picture agent",
-    version="2.3.0"
+    version="2.4.0"
 )
 
 app.add_middleware(
@@ -290,26 +290,39 @@ def extract_user_message_from_proper_params(params: MessageParams) -> str:
         parts = params.message.parts
         print(f"DEBUG: Found {len(parts)} parts in proper params")
         
+        all_texts = []
         for i, part in enumerate(parts):
-            print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text[:100] if part.text else 'None'}")
+            print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text[:200] if part.text else 'None'}")
             
             # Direct text part
             if part.kind == 'text' and part.text and part.text.strip():
+                all_texts.append(part.text)
                 clean_text = clean_user_input(part.text)
                 if clean_text:
+                    print(f"🚀 DEBUG: EXTRACTED COMMAND: '{clean_text}'")
                     return clean_text
             
             # Data part that might contain text
             if part.kind == 'data' and part.data:
+                print(f"DEBUG: Processing data part: {part.data}")
                 if isinstance(part.data, list):
                     for data_item in part.data:
                         if isinstance(data_item, dict) and data_item.get('kind') == 'text':
                             text_content = data_item.get('text', '')
                             if text_content and text_content.strip():
+                                all_texts.append(text_content)
                                 clean_text = clean_user_input(text_content)
                                 if clean_text:
+                                    print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA: '{clean_text}'")
                                     return clean_text
+                elif isinstance(part.data, str):
+                    all_texts.append(part.data)
+                    clean_text = clean_user_input(part.data)
+                    if clean_text:
+                        print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA STRING: '{clean_text}'")
+                        return clean_text
         
+        print(f"DEBUG: All texts found: {all_texts}")
         # Default fallback
         return "today's image"
             
@@ -383,51 +396,16 @@ def extract_user_message_from_a2a_message(message: A2AMessage) -> str:
                 return clean_text
     return "today's image"
 
-def extract_user_message_from_proper_params(params: MessageParams) -> str:
-    """Extract user message from proper MessageParams object"""
-    try:
-        parts = params.message.parts
-        print(f"DEBUG: Found {len(parts)} parts in proper params")
-        
-        all_texts = []
-        for i, part in enumerate(parts):
-            print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text[:200] if part.text else 'None'}")
-            
-            # Direct text part
-            if part.kind == 'text' and part.text and part.text.strip():
-                all_texts.append(part.text)
-                clean_text = clean_user_input(part.text)
-                if clean_text:
-                    print(f"🚀 DEBUG: EXTRACTED COMMAND: '{clean_text}'")
-                    return clean_text
-            
-            # Data part that might contain text
-            if part.kind == 'data' and part.data:
-                print(f"DEBUG: Processing data part: {part.data}")
-                if isinstance(part.data, list):
-                    for data_item in part.data:
-                        if isinstance(data_item, dict) and data_item.get('kind') == 'text':
-                            text_content = data_item.get('text', '')
-                            if text_content and text_content.strip():
-                                all_texts.append(text_content)
-                                clean_text = clean_user_input(text_content)
-                                if clean_text:
-                                    print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA: '{clean_text}'")
-                                    return clean_text
-                elif isinstance(part.data, str):
-                    all_texts.append(part.data)
-                    clean_text = clean_user_input(part.data)
-                    if clean_text:
-                        print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA STRING: '{clean_text}'")
-                        return clean_text
-        
-        print(f"DEBUG: All texts found: {all_texts}")
-        # Default fallback
-        return "today's image"
-            
-    except Exception as e:
-        print(f"ERROR in proper params extraction: {e}")
-        return "today's image"
+def extract_user_message_from_dict_message(message: dict) -> str:
+    """Extract user message from dictionary message"""
+    parts = message.get('parts', [])
+    for part in parts:
+        if part.get('kind') == 'text' and part.get('text'):
+            clean_text = clean_user_input(part['text'])
+            if clean_text:
+                return clean_text
+    return "today's image"
+
 def clean_user_input(text: str) -> str:
     """Clean and normalize user input text - FIXED VERSION"""
     if not text or not text.strip():
@@ -467,6 +445,7 @@ def clean_user_input(text: str) -> str:
     # If no specific command found, default to today's image
     print("DEBUG: No specific command detected, defaulting to today's image")
     return "today's image"
+
 async def process_user_command(command: str, request_id: str):
     """Process user command and return appropriate response"""
     print(f"🚀 PROCESSING COMMAND: '{command}'")
@@ -564,28 +543,22 @@ def get_fallback_response():
     return random.choice(FALLBACK_IMAGES)
 
 async def create_nasa_response(nasa_data, request_id):
-    """Create NASA response with multiple image display formats"""
+    """Create NASA response with better image display for Telex"""
     response_text = format_nasa_response(nasa_data)
     image_url = nasa_data.get('url', '')
-    hd_url = nasa_data.get('hdurl', image_url)
     
-    # Create response message with both text and image reference
+    print(f"DEBUG: Creating response with image URL: {image_url}")
+    
+    # Create a SIMPLE response that Telex can definitely handle
     response_parts = []
     
-    # Add text part
+    # 1. Main text description
     response_parts.append(MessagePart(kind="text", text=response_text))
     
-    # Add image parts in multiple formats for maximum compatibility
+    # 2. Plain text with markdown image syntax as fallback
     if nasa_data.get('media_type') == 'image' and image_url:
-        # Try multiple approaches to display the image
-        response_parts.append(MessagePart(kind="text", text=f"🖼️ **Image URL:** {image_url}"))
-        
-        # Add as file artifact
-        response_parts.append(MessagePart(kind="file", file_url=image_url))
-        
-        # Also add HD URL if available and different
-        if hd_url and hd_url != image_url:
-            response_parts.append(MessagePart(kind="file", file_url=hd_url))
+        markdown_image = f"![{nasa_data.get('title', 'NASA Image')}]({image_url})"
+        response_parts.append(MessagePart(kind="text", text=markdown_image))
     
     response_message = A2AMessage(
         role="agent",
@@ -596,37 +569,18 @@ async def create_nasa_response(nasa_data, request_id):
     
     artifacts = []
     
-    # Add image artifacts in multiple formats
+    # Add image artifacts
     if nasa_data.get('media_type') == 'image' and image_url:
-        # Standard image artifact
+        # Try multiple artifact types
         artifacts.append(Artifact(
             name="nasa_image",
             parts=[MessagePart(kind="file", file_url=image_url)]
         ))
         
-        # HD image artifact if available
-        if hd_url and hd_url != image_url:
-            artifacts.append(Artifact(
-                name="nasa_image_hd",
-                parts=[MessagePart(kind="file", file_url=hd_url)]
-            ))
-        
-        # Text artifact with URL
         artifacts.append(Artifact(
-            name="image_url",
-            parts=[MessagePart(kind="text", text=image_url)]
+            name="image_display",
+            parts=[MessagePart(kind="text", text=f"IMAGE: {image_url}")]
         ))
-    
-    # Add title and description artifacts
-    artifacts.append(Artifact(
-        name="image_title",
-        parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
-    ))
-    
-    artifacts.append(Artifact(
-        name="image_description", 
-        parts=[MessagePart(kind="text", text=nasa_data.get('explanation', 'No description available.'))]
-    ))
     
     return TaskResult(
         id=request_id,
@@ -705,21 +659,20 @@ def format_nasa_response(data):
     image_url = data.get('url', '')
     
     # Truncate long explanations
-    if len(explanation) > 500:
-        explanation = explanation[:500] + "..."
+    if len(explanation) > 400:
+        explanation = explanation[:400] + "..."
     
-    response_text = f"""🌌 *{title}* 🌌
+    response_text = f"""🛰️ **{title}** 🛰️
 
 {explanation}
 
-*Date:* {date}
-*Media Type:* {data.get('media_type', 'image')}
+**Date:** {date}
+**Type:** {data.get('media_type', 'image')}"""
 
-"""
-    
     # Add image URL prominently
     if data.get('media_type') == 'image' and image_url:
-        response_text += f"\n📸 **View Image:** {image_url}"
+        response_text += f"\n\n📸 **Image URL:** {image_url}"
+        response_text += f"\n🔗 **Direct Link:** {image_url}"
     
     response_text += "\n\n*Explore the cosmos!* 🚀"
     
@@ -730,14 +683,13 @@ async def root():
     return {
         "message": "NASA Space Explorer Agent is running!",
         "status": "healthy", 
-        "version": "2.3.0",
+        "version": "2.4.0",
         "protocol": "A2A Compliant",
         "features": {
             "caching": "Enabled (1 hour)",
-            "fallback_images": f"{len(FALLBACK_IMAGES)} available", 
+            "fallback_images": f"{len(FALLBACK_IMAGES)} available",
             "timeout": "8 seconds",
-            "space_facts": f"{len(SPACE_FACTS)} available",
-            "image_display": "Multiple formats supported"
+            "space_facts": f"{len(SPACE_FACTS)} available"
         }
     }
 
