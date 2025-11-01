@@ -374,19 +374,34 @@ async def handle_execute(params: ExecuteParams):
         configuration=MessageConfiguration()
     ))
 async def get_nasa_apod_data(date=None):
-    """Fetch NASA APOD data with timeout"""
+    """Fetch NASA APOD data with image URL validation"""
     try:
         url = f"{NASA_APOD_URL}?api_key={NASA_API_KEY}"
         if date:
             url += f"&date={date}"
             
-        # Use aiohttp with timeout instead of requests
-        timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
+        timeout = aiohttp.ClientTimeout(total=10)
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
                 response.raise_for_status()
                 data = await response.json()
+                
+                # Validate image URL is accessible
+                if data.get('media_type') == 'image' and data.get('url'):
+                    image_url = data['url']
+                    print(f"DEBUG: NASA image URL: {image_url}")
+                    
+                    # Test if image URL is accessible
+                    try:
+                        async with session.head(image_url, timeout=5) as img_check:
+                            if img_check.status == 200:
+                                print("DEBUG: Image URL is accessible")
+                            else:
+                                print(f"DEBUG: Image URL might not be accessible: {img_check.status}")
+                    except Exception as e:
+                        print(f"DEBUG: Could not verify image URL: {e}")
+                
                 return data
                 
     except asyncio.TimeoutError:
@@ -396,7 +411,7 @@ async def get_nasa_apod_data(date=None):
         print(f"ERROR fetching NASA data: {e}")
         return get_fallback_response()
 async def create_nasa_response(nasa_data, user_message):
-    """Create NASA response - SINGLE VERSION"""
+    """Create NASA response with enhanced image display"""
     response_text = format_nasa_response(nasa_data)
     
     response_message = A2AMessage(
@@ -407,10 +422,22 @@ async def create_nasa_response(nasa_data, user_message):
     )
     
     artifacts = []
-    if nasa_data.get('media_type') == 'image' and nasa_data.get('url'):
+    image_url = nasa_data.get('url', '')
+    
+    if nasa_data.get('media_type') == 'image' and image_url:
+        # Add image as both file and text artifact for maximum compatibility
         artifacts.append(Artifact(
             name="nasa_image",
-            parts=[MessagePart(kind="file", file_url=nasa_data['url'])]
+            parts=[
+                MessagePart(kind="file", file_url=image_url),
+                MessagePart(kind="text", text=f"NASA Image: {image_url}")
+            ]
+        ))
+        
+        # Also add a separate text artifact with the URL
+        artifacts.append(Artifact(
+            name="image_url",
+            parts=[MessagePart(kind="text", text=image_url)]
         ))
     
     artifacts.append(Artifact(
@@ -418,11 +445,10 @@ async def create_nasa_response(nasa_data, user_message):
         parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
     ))
     
-    # Use proper ID from user message
     task_id = user_message.taskId or str(uuid4())
     
     return TaskResult(
-        id=task_id,  # This is now a string
+        id=task_id,
         contextId=str(uuid4()),
         status=TaskStatus(
             state="completed",
@@ -498,26 +524,33 @@ async def get_space_fact_response(user_message: A2AMessage):
     )
 
 def format_nasa_response(data):
-    """Format NASA data into nice response"""
+    """Format NASA data into nice response with proper image display"""
     title = data.get('title', 'Unknown Title')
     explanation = data.get('explanation', 'No description available.')
     date = data.get('date', 'Unknown date')
+    image_url = data.get('url', '')
     
     # Truncate long explanations
-    if len(explanation) > 1000:
-        explanation = explanation[:1000] + "..."
+    if len(explanation) > 800:
+        explanation = explanation[:800] + "..."
     
-    return f"""🌌 *{title}* 🌌
+    # FORCE IMAGE DISPLAY - Multiple formats for Telex compatibility
+    response_text = f"""🌌 *{title}* 🌌
 
 {explanation}
 
-![NASA Image]({data.get('url', '')})
+🖼️ **Image:** {image_url}
 
 *Details:*
 📅 Date: {date}
 🖼️ Media Type: {data.get('media_type', 'image')}
 
+📸 *View Image:* {image_url}
+
 *Explore the cosmos!* 🚀"""
+    
+    return response_text
+
 
 @app.get("/")
 async def root():
