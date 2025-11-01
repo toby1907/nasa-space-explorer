@@ -335,6 +335,7 @@ async def handle_message_send(params: MessageParams):
     elif command == "help":
         print("DEBUG: Returning help")
         help_text = """🛰️ *NASA Space Explorer Commands* 🛰️
+    
 
 Available commands:
 • "today's image" - Today's Astronomy Picture of the Day
@@ -362,6 +363,16 @@ Try: "today's image" to see today's space wonder! 🚀"""
             artifacts=[],
             history=[params.message, response_message]
         )
+    elif command == "test image":
+        print("DEBUG: Returning test image")
+        test_data = {
+            "title": "TEST: Orion Nebula",
+            "explanation": "This is a test image to verify image display in Telex chat.",
+            "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
+            "media_type": "image", 
+            "date": "2024-01-01"
+        }
+        return await create_nasa_response(test_data, params.message)
     else:  # today's image (default)
         print("DEBUG: Returning today's NASA image")
         nasa_data = await get_nasa_apod_data()
@@ -458,13 +469,13 @@ async def create_nasa_response(nasa_data, user_message):
         history=[user_message, response_message]
     )
 def get_fallback_response():
-    """Return fallback response when NASA API fails"""
+    """Return fallback response with sample image when NASA API fails"""
     return {
-        "title": "Space Exploration",
-        "explanation": "We're having trouble connecting to NASA's servers right now. Please try again in a moment to see amazing space images!",
-        "url": "",
+        "title": "Hubble Space Telescope View",
+        "explanation": "This is a sample space image since NASA's servers are temporarily unavailable. The Hubble Space Telescope has captured stunning views of distant galaxies, nebulae, and star clusters, revealing the beauty of our universe.",
+        "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
         "media_type": "image",
-        "date": "Unknown"
+        "date": datetime.now().strftime("%Y-%m-%d")
     }
 async def get_random_apod_data():
     """Get random APOD from archive"""
