@@ -73,7 +73,7 @@ class JSONRPCResponse(BaseModel):
 app = FastAPI(
     title="NASA Space Explorer Agent - A2A Compliant",
     description="A fully A2A protocol compliant NASA Astronomy Picture agent",
-    version="2.2.0"
+    version="2.3.0"
 )
 
 app.add_middleware(
@@ -92,12 +92,13 @@ NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
 nasa_cache = {}
 CACHE_DURATION = 3600  # 1 hour
 
-# Pre-defined fallback images
+# Pre-defined fallback images with guaranteed working URLs
 FALLBACK_IMAGES = [
     {
         "title": "Hubble Space Telescope View",
         "explanation": "The Hubble Space Telescope has revolutionized astronomy with its stunning views of distant galaxies, nebulae, and star clusters. This image showcases the incredible detail Hubble can capture from its orbit above Earth's atmosphere.",
         "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
+        "hdurl": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     },
@@ -105,6 +106,7 @@ FALLBACK_IMAGES = [
         "title": "Orion Nebula",
         "explanation": "The Orion Nebula is one of the brightest nebulae visible to the naked eye. Located in the Milky Way, it's a stellar nursery where new stars are being born from clouds of gas and dust.",
         "url": "https://images-assets.nasa.gov/image/PIA23122/PIA23122~large.jpg",
+        "hdurl": "https://images-assets.nasa.gov/image/PIA23122/PIA23122~large.jpg",
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     },
@@ -112,6 +114,23 @@ FALLBACK_IMAGES = [
         "title": "Jupiter's Great Red Spot",
         "explanation": "Jupiter's Great Red Spot is a gigantic storm that has been raging for at least 400 years. This massive anticyclonic storm is larger than Earth and winds can reach speeds of 430 km/h.",
         "url": "https://images-assets.nasa.gov/image/PIA22946/PIA22946~large.jpg",
+        "hdurl": "https://images-assets.nasa.gov/image/PIA22946/PIA22946~large.jpg",
+        "media_type": "image",
+        "date": datetime.now().strftime("%Y-%m-%d")
+    },
+    {
+        "title": "Earth from Space",
+        "explanation": "A stunning view of our planet Earth from space, showing continents, oceans, and weather patterns. This perspective reminds us of the beauty and fragility of our home planet.",
+        "url": "https://images-assets.nasa.gov/image/iss061e117120/iss061e117120~large.jpg",
+        "hdurl": "https://images-assets.nasa.gov/image/iss061e117120/iss061e117120~large.jpg",
+        "media_type": "image",
+        "date": datetime.now().strftime("%Y-%m-%d")
+    },
+    {
+        "title": "Mars Rover Panorama",
+        "explanation": "A panoramic view from the Mars rover showing the red planet's surface with its distinctive rust-colored soil and rock formations. Humanity's robotic explorers continue to reveal Mars' secrets.",
+        "url": "https://images-assets.nasa.gov/image/PIA24546/PIA24546~large.jpg",
+        "hdurl": "https://images-assets.nasa.gov/image/PIA24546/PIA24546~large.jpg",
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     }
@@ -439,14 +458,18 @@ async def get_nasa_apod_data(date=None):
             
         print(f"DEBUG: Calling NASA API: {url}")
         
-        # Shorter timeout for faster fallback - NASA API is often slow
-        timeout = aiohttp.ClientTimeout(total=8)  # 8 seconds timeout
+        # Shorter timeout for faster fallback
+        timeout = aiohttp.ClientTimeout(total=8)
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     data = await response.json()
                     print(f"DEBUG: NASA API success - Title: {data.get('title')}")
+                    # Ensure we have proper image URLs
+                    if data.get('media_type') == 'image':
+                        if not data.get('hdurl'):
+                            data['hdurl'] = data.get('url', '')
                     # Cache the successful response
                     nasa_cache[cache_key] = (datetime.now(), data)
                     return data
@@ -473,7 +496,7 @@ async def get_random_apod_data():
     try:
         # NASA APOD started June 16, 1995
         start_date = datetime(1995, 6, 16)
-        end_date = datetime.now() - timedelta(days=1)  # Exclude today
+        end_date = datetime.now() - timedelta(days=1)
         random_date = start_date + timedelta(
             days=random.randint(0, (end_date - start_date).days)
         )
@@ -495,30 +518,68 @@ def get_fallback_response():
     return random.choice(FALLBACK_IMAGES)
 
 async def create_nasa_response(nasa_data, request_id):
-    """Create NASA response with enhanced formatting"""
+    """Create NASA response with multiple image display formats"""
     response_text = format_nasa_response(nasa_data)
+    image_url = nasa_data.get('url', '')
+    hd_url = nasa_data.get('hdurl', image_url)
+    
+    # Create response message with both text and image reference
+    response_parts = []
+    
+    # Add text part
+    response_parts.append(MessagePart(kind="text", text=response_text))
+    
+    # Add image parts in multiple formats for maximum compatibility
+    if nasa_data.get('media_type') == 'image' and image_url:
+        # Try multiple approaches to display the image
+        response_parts.append(MessagePart(kind="text", text=f"🖼️ **Image URL:** {image_url}"))
+        
+        # Add as file artifact
+        response_parts.append(MessagePart(kind="file", file_url=image_url))
+        
+        # Also add HD URL if available and different
+        if hd_url and hd_url != image_url:
+            response_parts.append(MessagePart(kind="file", file_url=hd_url))
     
     response_message = A2AMessage(
         role="agent",
-        parts=[MessagePart(kind="text", text=response_text)],
+        parts=response_parts,
         messageId=str(uuid4()),
         taskId=request_id
     )
     
     artifacts = []
-    image_url = nasa_data.get('url', '')
     
-    # Add image artifact if available
+    # Add image artifacts in multiple formats
     if nasa_data.get('media_type') == 'image' and image_url:
+        # Standard image artifact
         artifacts.append(Artifact(
             name="nasa_image",
             parts=[MessagePart(kind="file", file_url=image_url)]
         ))
+        
+        # HD image artifact if available
+        if hd_url and hd_url != image_url:
+            artifacts.append(Artifact(
+                name="nasa_image_hd",
+                parts=[MessagePart(kind="file", file_url=hd_url)]
+            ))
+        
+        # Text artifact with URL
+        artifacts.append(Artifact(
+            name="image_url",
+            parts=[MessagePart(kind="text", text=image_url)]
+        ))
     
-    # Add title artifact
+    # Add title and description artifacts
     artifacts.append(Artifact(
         name="image_title",
         parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
+    ))
+    
+    artifacts.append(Artifact(
+        name="image_description", 
+        parts=[MessagePart(kind="text", text=nasa_data.get('explanation', 'No description available.'))]
     ))
     
     return TaskResult(
@@ -595,10 +656,11 @@ def format_nasa_response(data):
     title = data.get('title', 'Unknown Title')
     explanation = data.get('explanation', 'No description available.')
     date = data.get('date', 'Unknown date')
+    image_url = data.get('url', '')
     
     # Truncate long explanations
-    if len(explanation) > 600:
-        explanation = explanation[:600] + "..."
+    if len(explanation) > 500:
+        explanation = explanation[:500] + "..."
     
     response_text = f"""🌌 *{title}* 🌌
 
@@ -607,7 +669,13 @@ def format_nasa_response(data):
 *Date:* {date}
 *Media Type:* {data.get('media_type', 'image')}
 
-*Explore the cosmos!* 🚀"""
+"""
+    
+    # Add image URL prominently
+    if data.get('media_type') == 'image' and image_url:
+        response_text += f"\n📸 **View Image:** {image_url}"
+    
+    response_text += "\n\n*Explore the cosmos!* 🚀"
     
     return response_text
 
@@ -616,13 +684,14 @@ async def root():
     return {
         "message": "NASA Space Explorer Agent is running!",
         "status": "healthy", 
-        "version": "2.2.0",
+        "version": "2.3.0",
         "protocol": "A2A Compliant",
         "features": {
             "caching": "Enabled (1 hour)",
-            "fallback_images": f"{len(FALLBACK_IMAGES)} available",
+            "fallback_images": f"{len(FALLBACK_IMAGES)} available", 
             "timeout": "8 seconds",
-            "space_facts": f"{len(SPACE_FACTS)} available"
+            "space_facts": f"{len(SPACE_FACTS)} available",
+            "image_display": "Multiple formats supported"
         }
     }
 
@@ -637,11 +706,12 @@ async def test_endpoint():
         data = await get_nasa_apod_data()
         return {
             "nasa_api_status": "connected",
-            "agent_status": "healthy",
+            "agent_status": "healthy", 
             "cache_size": len(nasa_cache),
             "sample_data": {
                 "title": data.get('title'),
-                "media_type": data.get('media_type')
+                "media_type": data.get('media_type'),
+                "has_image": data.get('media_type') == 'image'
             }
         }
     except Exception as e:
