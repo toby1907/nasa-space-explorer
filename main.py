@@ -4,11 +4,13 @@ from fastapi.middleware.cors import CORSMiddleware
 import requests
 import os
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, List, Dict, Any
 import asyncio
 import aiohttp
+import random
+import json
 
 # Pydantic Models for A2A Protocol
 class MessagePart(BaseModel):
@@ -71,7 +73,7 @@ class JSONRPCResponse(BaseModel):
 app = FastAPI(
     title="NASA Space Explorer Agent - A2A Compliant",
     description="A fully A2A protocol compliant NASA Astronomy Picture agent",
-    version="2.0.0"
+    version="2.1.0"
 )
 
 app.add_middleware(
@@ -86,8 +88,47 @@ app.add_middleware(
 NASA_APOD_URL = "https://api.nasa.gov/planetary/apod"
 NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
 
-from pydantic import ValidationError
-import json
+# Cache for NASA responses to avoid repeated API calls
+nasa_cache = {}
+CACHE_DURATION = 3600  # 1 hour
+
+# Pre-defined fallback images for when NASA API fails
+FALLBACK_IMAGES = [
+    {
+        "title": "Hubble Space Telescope View",
+        "explanation": "The Hubble Space Telescope has revolutionized astronomy with its stunning views of distant galaxies, nebulae, and star clusters. This image showcases the incredible detail Hubble can capture from its orbit above Earth's atmosphere.",
+        "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
+        "media_type": "image",
+        "date": datetime.now().strftime("%Y-%m-%d")
+    },
+    {
+        "title": "Orion Nebula",
+        "explanation": "The Orion Nebula is one of the brightest nebulae visible to the naked eye. Located in the Milky Way, it's a stellar nursery where new stars are being born from clouds of gas and dust.",
+        "url": "https://images-assets.nasa.gov/image/PIA23122/PIA23122~large.jpg",
+        "media_type": "image",
+        "date": datetime.now().strftime("%Y-%m-%d")
+    },
+    {
+        "title": "Jupiter's Great Red Spot",
+        "explanation": "Jupiter's Great Red Spot is a gigantic storm that has been raging for at least 400 years. This massive anticyclonic storm is larger than Earth and winds can reach speeds of 430 km/h.",
+        "url": "https://images-assets.nasa.gov/image/PIA22946/PIA22946~large.jpg",
+        "media_type": "image",
+        "date": datetime.now().strftime("%Y-%m-%d")
+    }
+]
+
+SPACE_FACTS = [
+    "A day on Mercury lasts 59 Earth days!",
+    "Neptune's winds can reach 1,600 km/h - the fastest in the solar system!",
+    "There are more stars in the universe than grains of sand on all Earth's beaches!",
+    "A teaspoon of neutron star would weigh about 6 billion tons!",
+    "Venus is the only planet that spins clockwise!",
+    "The Sun makes up 99.86% of the mass in our solar system!",
+    "Space is completely silent - there's no atmosphere to carry sound!",
+    "The International Space Station orbits Earth every 90 minutes!",
+    "A year on Venus is shorter than a day on Venus!",
+    "There is a giant cloud of alcohol in Sagittarius B that contains billions of liters of vodka!"
+]
 
 @app.post("/a2a/nasa")
 async def a2a_endpoint(request: Request):
@@ -109,44 +150,39 @@ async def a2a_endpoint(request: Request):
                 }
             )
         
+        request_id = body.get("id", "unknown")
+        
         try:
             # First try to parse with strict validation
             rpc_request = JSONRPCRequest(**body)
-        except ValidationError as e:
-            print(f"Validation error: {e}")
-            # Telex is sending invalid data - extract user message manually
-            user_message = extract_user_message_from_telex_body(body)
-            print(f"Extracted user message: '{user_message}'")
-            
-            # Process the message directly
-            result = await process_message_directly(user_message, body.get("id", "telex-fallback"))
-            
-            response = JSONRPCResponse(
-                id=body.get("id", "telex-fallback"),
-                result=result
-            )
-            return response.model_dump()
+            method = rpc_request.method
+            params = rpc_request.params
+        except Exception as e:
+            print(f"Validation error, using fallback parsing: {e}")
+            # Use fallback parsing for Telex's non-standard format
+            method = body.get("method", "message/send")
+            params = body.get("params", {})
         
-        # Process based on method (normal flow)
-        if rpc_request.method == "message/send":
-            result = await handle_message_send(rpc_request.params)
-        elif rpc_request.method == "execute":
-            result = await handle_execute(rpc_request.params)
+        # Process based on method
+        if method == "message/send":
+            result = await handle_message_send_fallback(params, request_id)
+        elif method == "execute":
+            result = await handle_execute_fallback(params, request_id)
         else:
             return JSONResponse(
                 status_code=400,
                 content={
                     "jsonrpc": "2.0",
-                    "id": rpc_request.id,
+                    "id": request_id,
                     "error": {
                         "code": -32601,
-                        "message": f"Method not found: {rpc_request.method}"
+                        "message": f"Method not found: {method}"
                     }
                 }
             )
         
         response = JSONRPCResponse(
-            id=rpc_request.id,
+            id=request_id,
             result=result
         )
         
@@ -167,47 +203,282 @@ async def a2a_endpoint(request: Request):
             }
         )
 
-def extract_user_message_from_telex_body(body):
-    """Extract user command - WITH FORCEFUL DEBUGGING"""
+async def handle_message_send_fallback(params: dict, request_id: str):
+    """Handle message/send with fallback parsing"""
+    print("=== DEBUG: handle_message_send_fallback called ===")
+    
+    # Extract user message from various possible locations
+    user_message = extract_user_message_robust(params)
+    print(f"🚀 DEBUG: EXTRACTED USER MESSAGE: '{user_message}'")
+    
+    # Process the command
+    return await process_user_command(user_message, request_id)
+
+async def handle_execute_fallback(params: dict, request_id: str):
+    """Handle execute with fallback parsing"""
+    messages = params.get('messages', [])
+    if messages:
+        # Use the last message
+        last_message = messages[-1]
+        user_message = extract_user_message_from_a2a_message(last_message)
+    else:
+        user_message = "today's image"
+    
+    return await process_user_command(user_message, request_id)
+
+def extract_user_message_robust(params: dict) -> str:
+    """Extract user message from params with robust parsing"""
     try:
-        print("=== DEBUG: Starting extraction ===")
-        message_parts = body.get('params', {}).get('message', {}).get('parts', [])
-        print(f"DEBUG: Found {len(message_parts)} message parts")
+        message_data = params.get('message', {})
+        parts = message_data.get('parts', [])
         
-        for i, part in enumerate(message_parts):
-            print(f"DEBUG: Part {i}: kind={part.get('kind')}, text={part.get('text')}")
+        print(f"DEBUG: Found {len(parts)} parts in message")
+        
+        # Look for text in parts
+        for i, part in enumerate(parts):
+            part_kind = part.get('kind', '')
+            part_text = part.get('text', '')
+            part_data = part.get('data')
             
-            if part.get('kind') == 'text' and part.get('text'):
-                text = part['text'].lower()
-                print(f"DEBUG: Processing text: '{text}'")
-                
-                # FORCEFUL COMMAND DETECTION
-                if "space fact" in text:
-                    print("🚀 DEBUG: FOUND 'space fact' - RETURNING SPACE FACT!")
-                    return "space fact"
-                elif "random fact" in text:
-                    print("🚀 DEBUG: FOUND 'random fact' - RETURNING SPACE FACT!")
-                    return "space fact"
-                elif "random image" in text:
-                    print("🚀 DEBUG: FOUND 'random image'")
-                    return "random image"
-                elif "yesterday" in text:
-                    print("🚀 DEBUG: FOUND 'yesterday'")
-                    return "yesterday's image"
-                elif "today" in text:
-                    print("🚀 DEBUG: FOUND 'today'")
-                    return "today's image"
-                else:
-                    print(f"DEBUG: No command found in: '{text}'")
+            print(f"DEBUG: Part {i} - kind: {part_kind}, text: {part_text[:100] if part_text else 'None'}")
+            
+            # Direct text part
+            if part_kind == 'text' and part_text and part_text.strip():
+                clean_text = clean_user_input(part_text)
+                if clean_text:
+                    return clean_text
+            
+            # Data part that might contain text
+            if part_kind == 'data' and part_data:
+                if isinstance(part_data, list):
+                    for data_item in part_data:
+                        if isinstance(data_item, dict) and data_item.get('kind') == 'text':
+                            text_content = data_item.get('text', '')
+                            if text_content and text_content.strip():
+                                clean_text = clean_user_input(text_content)
+                                if clean_text:
+                                    return clean_text
+                elif isinstance(part_data, str):
+                    clean_text = clean_user_input(part_data)
+                    if clean_text:
+                        return clean_text
         
-        print("DEBUG: No command found in any part, defaulting to today's image")
-        return "today's image"
-        
+        # If we get here, try to find any text in the entire params structure
+        params_str = json.dumps(params)
+        if 'today' in params_str.lower():
+            return "today's image"
+        elif 'space fact' in params_str.lower() or 'random fact' in params_str.lower():
+            return "space fact"
+        elif 'random image' in params_str.lower():
+            return "random image"
+        elif 'yesterday' in params_str.lower():
+            return "yesterday's image"
+        elif 'help' in params_str.lower():
+            return "help"
+            
     except Exception as e:
-        print(f"ERROR in extraction: {e}")
+        print(f"ERROR in message extraction: {e}")
+    
+    # Default fallback
+    return "today's image"
+
+def extract_user_message_from_a2a_message(message: dict) -> str:
+    """Extract user message from A2A message format"""
+    parts = message.get('parts', [])
+    for part in parts:
+        if part.get('kind') == 'text' and part.get('text'):
+            clean_text = clean_user_input(part['text'])
+            if clean_text:
+                return clean_text
+    return "today's image"
+
+def clean_user_input(text: str) -> str:
+    """Clean and normalize user input text"""
+    if not text or not text.strip():
+        return ""
+    
+    # Remove HTML tags and extra whitespace
+    import re
+    clean_text = re.sub('<[^<]+?>', '', text)  # Remove HTML tags
+    clean_text = clean_text.strip()
+    
+    # Simple command detection
+    clean_text_lower = clean_text.lower()
+    
+    if any(cmd in clean_text_lower for cmd in ['space fact', 'random fact']):
+        return "space fact"
+    elif 'random image' in clean_text_lower:
+        return "random image"
+    elif 'yesterday' in clean_text_lower:
+        return "yesterday's image"
+    elif 'today' in clean_text_lower:
         return "today's image"
+    elif 'help' in clean_text_lower:
+        return "help"
+    elif 'test' in clean_text_lower:
+        return "test image"
+    
+    return clean_text
+
+async def process_user_command(command: str, request_id: str):
+    """Process user command and return appropriate response"""
+    print(f"🚀 PROCESSING COMMAND: '{command}'")
+    
+    if command == "space fact":
+        return await create_space_fact_response(request_id)
+    elif command == "random image":
+        nasa_data = await get_random_apod_data()
+    elif command == "yesterday's image":
+        nasa_data = await get_yesterday_apod_data()
+    elif command == "help":
+        return await create_help_response(request_id)
+    elif command == "test image":
+        nasa_data = random.choice(FALLBACK_IMAGES)
+    else:  # today's image (default)
+        nasa_data = await get_nasa_apod_data()
+    
+    return await create_nasa_response(nasa_data, request_id)
+
+async def get_nasa_apod_data(date=None):
+    """Fetch NASA APOD data with better timeout handling and caching"""
+    cache_key = f"apod_{date}" if date else "apod_today"
+    
+    # Check cache first
+    if cache_key in nasa_cache:
+        cache_time, cached_data = nasa_cache[cache_key]
+        if (datetime.now() - cache_time).total_seconds() < CACHE_DURATION:
+            print(f"DEBUG: Using cached data for {cache_key}")
+            return cached_data
+    
+    try:
+        url = f"{NASA_APOD_URL}?api_key={NASA_API_KEY}"
+        if date:
+            url += f"&date={date}"
+            
+        print(f"DEBUG: Calling NASA API: {url}")
+        
+        # Increased timeout with retry logic
+        timeout = aiohttp.ClientTimeout(total=15)  # Increased to 15 seconds
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    print(f"DEBUG: NASA API success - Title: {data.get('title')}")
+                    # Cache the successful response
+                    nasa_cache[cache_key] = (datetime.now(), data)
+                    return data
+                else:
+                    print(f"DEBUG: NASA API error: {response.status}")
+                    return get_fallback_response()
+                
+    except asyncio.TimeoutError:
+        print("DEBUG: NASA API timeout - using fallback")
+        return get_fallback_response()
+    except Exception as e:
+        print(f"DEBUG: NASA API exception: {e}")
+        return get_fallback_response()
+
+async def get_random_apod_data():
+    """Get random APOD from archive with caching"""
+    cache_key = "apod_random"
+    
+    if cache_key in nasa_cache:
+        cache_time, cached_data = nasa_cache[cache_key]
+        if (datetime.now() - cache_time).total_seconds() < CACHE_DURATION:
+            return cached_data
+    
+    try:
+        # NASA APOD started June 16, 1995
+        start_date = datetime(1995, 6, 16)
+        end_date = datetime.now() - timedelta(days=1)  # Exclude today
+        random_date = start_date + timedelta(
+            days=random.randint(0, (end_date - start_date).days)
+        )
+        
+        data = await get_nasa_apod_data(random_date.strftime("%Y-%m-%d"))
+        nasa_cache[cache_key] = (datetime.now(), data)
+        return data
+    except Exception as e:
+        print(f"DEBUG: Random APOD error: {e}")
+        return random.choice(FALLBACK_IMAGES)
+
+async def get_yesterday_apod_data():
+    """Get yesterday's APOD"""
+    yesterday = datetime.now() - timedelta(days=1)
+    return await get_nasa_apod_data(yesterday.strftime("%Y-%m-%d"))
+
+def get_fallback_response():
+    """Return random fallback response"""
+    return random.choice(FALLBACK_IMAGES)
+
+async def create_nasa_response(nasa_data, request_id):
+    """Create NASA response with enhanced formatting"""
+    response_text = format_nasa_response(nasa_data)
+    
+    response_message = A2AMessage(
+        role="agent",
+        parts=[MessagePart(kind="text", text=response_text)],
+        messageId=str(uuid4()),
+        taskId=request_id
+    )
+    
+    artifacts = []
+    image_url = nasa_data.get('url', '')
+    
+    # Add image artifact if available
+    if nasa_data.get('media_type') == 'image' and image_url:
+        artifacts.append(Artifact(
+            name="nasa_image",
+            parts=[MessagePart(kind="file", file_url=image_url)]
+        ))
+    
+    # Add title artifact
+    artifacts.append(Artifact(
+        name="image_title",
+        parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
+    ))
+    
+    return TaskResult(
+        id=request_id,
+        contextId=str(uuid4()),
+        status=TaskStatus(
+            state="completed",
+            message=response_message
+        ),
+        artifacts=artifacts,
+        history=[response_message]
+    )
+
+async def create_space_fact_response(request_id):
+    """Create space fact response"""
+    fact = random.choice(SPACE_FACTS)
+    
+    response_message = A2AMessage(
+        role="agent",
+        parts=[MessagePart(kind="text", text=f"🌌 *Space Fact* 🌌\n\n{fact}")],
+        messageId=str(uuid4()),
+        taskId=request_id
+    )
+    
+    return TaskResult(
+        id=request_id,
+        contextId=str(uuid4()),
+        status=TaskStatus(
+            state="completed",
+            message=response_message
+        ),
+        artifacts=[
+            Artifact(
+                name="space_fact",
+                parts=[MessagePart(kind="text", text=fact)]
+            )
+        ],
+        history=[response_message]
+    )
+
 async def create_help_response(request_id):
-    """Create help response with available commands"""
+    """Create help response"""
     help_text = """🛰️ *NASA Space Explorer Commands* 🛰️
 
 Available commands:
@@ -223,7 +494,7 @@ Try: "today's image" to see today's space wonder! 🚀"""
         role="agent",
         parts=[MessagePart(kind="text", text=help_text)],
         messageId=str(uuid4()),
-        taskId=None
+        taskId=request_id
     )
     
     return TaskResult(
@@ -236,362 +507,40 @@ Try: "today's image" to see today's space wonder! 🚀"""
         artifacts=[],
         history=[response_message]
     )
-async def process_message_directly(user_message, request_id):
-    """Process command - WITH CLEAR DEBUG"""
-    print(f"=== DEBUG: Processing command: '{user_message}' ===")
-    
-    # Create a mock user_message object for the direct processing flow
-    mock_user_message = A2AMessage(
-        role="user",
-        parts=[MessagePart(kind="text", text=user_message)],
-        taskId=request_id
-    )
-    
-    if user_message == "space fact":
-        print("🚀 DEBUG: CONFIRMED - RETURNING SPACE FACT!")
-        return await get_space_fact_response(mock_user_message)  # Use existing function
-    elif user_message == "random image":
-        print("DEBUG: Returning random NASA image")
-        nasa_data = await get_random_apod_data()
-    elif user_message == "yesterday's image":
-        print("DEBUG: Returning yesterday's NASA image")
-        nasa_data = await get_yesterday_apod_data()
-    elif user_message == "help":
-        print("DEBUG: Returning help")
-        return await create_help_response(request_id)
-    else:
-        print("DEBUG: Defaulting to today's NASA image")
-        nasa_data = await get_nasa_apod_data()
-    
-    return await create_nasa_response(nasa_data, mock_user_message)  # Use the new function
-async def handle_message_send(params: MessageParams):
-    """Handle message/send - COMPLETE DEBUGGING"""
-    print("=== DEBUG: handle_message_send called ===")
-    print(f"DEBUG: Full message parts: {params.message.parts}")
-    
-    # EXTRACT USER MESSAGE from all possible locations
-    user_text = ""
-    for i, part in enumerate(params.message.parts):
-        print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text}, data: {part.data}")
-        
-        # Check text parts
-        if part.kind == "text" and part.text and part.text.strip():
-            user_text = part.text
-            print(f"DEBUG: Found text in parts: '{user_text}'")
-            break
-        
-        # Check data parts that might contain the message
-        if part.kind == "data" and part.data:
-            print(f"DEBUG: Found data part: {part.data}")
-            # Sometimes the message is in data parts
-            if isinstance(part.data, list):
-                for data_item in part.data:
-                    if isinstance(data_item, dict) and data_item.get('kind') == 'text':
-                        potential_text = data_item.get('text', '')
-                        if potential_text and potential_text.strip():
-                            user_text = potential_text
-                            print(f"DEBUG: Found text in data: '{user_text}'")
-                            break
-    
-    # If still no text, try a different approach
-    if not user_text:
-        print("DEBUG: No text found in normal parts, checking alternative locations")
-        # Sometimes Telex puts the message in different structures
-        try:
-            # Convert the whole message to dict and search for text
-            message_dict = params.message.dict()
-            import json
-            print(f"DEBUG: Full message structure: {json.dumps(message_dict, indent=2)}")
-        except Exception as e:
-            print(f"DEBUG: Could not dump message structure: {e}")
-    
-    # SIMPLE FALLBACK: If we can't find the user's message, just return a test image
-    if not user_text:
-        print("🚀 DEBUG: No user text found - returning test image by default")
-        test_data = {
-            "title": "Hubble Space Telescope View", 
-            "explanation": "Since we couldn't detect your specific command, here's a beautiful space image from the Hubble Space Telescope showing distant galaxies and nebulae.",
-            "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
-            "media_type": "image",
-            "date": "2024-01-01"
-        }
-        return await create_nasa_response(test_data, params.message)
-    
-    # If we found text, process it normally
-    print(f"DEBUG: Processing user text: '{user_text}'")
-    
-    # ULTRA-SIMPLE COMMAND DETECTION
-    command = "test image"  # Default to test image for now
-    
-    clean_text = user_text.lower().replace("'", "").replace('"', '')
-    
-    if "test image" in clean_text:
-        command = "test image"
-    elif "space fact" in clean_text or "random fact" in clean_text:
-        command = "space fact"
-    elif "random image" in clean_text:
-        command = "random image" 
-    elif "yesterday" in clean_text:
-        command = "yesterday's image"
-    elif "today" in clean_text:
-        command = "today's image"
-    elif "help" in clean_text:
-        command = "help"
-    
-    print(f"🚀 DEBUG: FINAL COMMAND: '{command}'")
-    
-    # Process the command
-    if command == "test image":
-        print("🚀 DEBUG: Returning test image")
-        test_data = {
-            "title": "TEST: Orion Nebula",
-            "explanation": "This is a test image to verify image display in Telex chat. The Orion Nebula is one of the brightest nebulae in the night sky.",
-            "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg", 
-            "media_type": "image",
-            "date": "2024-01-01"
-        }
-        return await create_nasa_response(test_data, params.message)
-    elif command == "space fact":
-        print("🚀 DEBUG: Returning space fact")
-        return await get_space_fact_response(params.message)
-    elif command == "random image":
-        print("DEBUG: Returning random NASA image")
-        nasa_data = await get_random_apod_data()
-    elif command == "yesterday's image":
-        print("DEBUG: Returning yesterday's NASA image")
-        nasa_data = await get_yesterday_apod_data()
-    elif command == "help":
-        print("DEBUG: Returning help")
-        help_text = """🛰️ *NASA Space Explorer* 🛰️
-
-Commands:
-• "today's image" - NASA Astronomy Picture
-• "random image" - Random space image  
-• "yesterday's image" - Yesterday's picture
-• "space fact" - Interesting space facts
-• "test image" - Test image display
-• "help" - This message
-
-Try: "test image" to see if images work! 🚀"""
-        
-        response_message = A2AMessage(
-            role="agent",
-            parts=[MessagePart(kind="text", text=help_text)],
-            messageId=str(uuid4()),
-            taskId=params.message.taskId
-        )
-        
-        return TaskResult(
-            id=params.message.taskId or str(uuid4()),
-            contextId=str(uuid4()),
-            status=TaskStatus(
-                state="completed",
-                message=response_message
-            ),
-            artifacts=[],
-            history=[params.message, response_message]
-        )
-    else:  # today's image (default)
-        print("DEBUG: Returning today's NASA image")
-        nasa_data = await get_nasa_apod_data()
-    
-    return await create_nasa_response(nasa_data, params.message)
-async def handle_execute(params: ExecuteParams):
-    """Handle execute method (for multiple messages)"""
-    if not params.messages:
-        # If no messages, create a default one
-        user_message = A2AMessage(
-            role="user",
-            parts=[MessagePart(kind="text", text="today's image")]
-        )
-    else:
-        user_message = params.messages[-1]
-    
-    return await handle_message_send(MessageParams(
-        message=user_message,
-        configuration=MessageConfiguration()
-    ))
-async def get_nasa_apod_data(date=None):
-    """Fetch NASA APOD data with better timeout handling"""
-    try:
-        url = f"{NASA_APOD_URL}?api_key={NASA_API_KEY}"
-        if date:
-            url += f"&date={date}"
-            
-        print(f"DEBUG: Calling NASA API: {url}")
-        
-        # Shorter timeout for faster fallback
-        timeout = aiohttp.ClientTimeout(total=5)  # Reduced from 10 to 5 seconds
-        
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    print(f"DEBUG: NASA API success - Title: {data.get('title')}")
-                    return data
-                else:
-                    print(f"DEBUG: NASA API error: {response.status}")
-                    return get_fallback_response()
-                
-    except asyncio.TimeoutError:
-        print("DEBUG: NASA API timeout - using fallback")
-        return get_fallback_response()
-    except Exception as e:
-        print(f"DEBUG: NASA API exception: {e}")
-        return get_fallback_response()
-async def create_nasa_response(nasa_data, user_message):
-    """Create NASA response with enhanced image display"""
-    response_text = format_nasa_response(nasa_data)
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=response_text)],
-        messageId=str(uuid4()),
-        taskId=user_message.taskId
-    )
-    
-    artifacts = []
-    image_url = nasa_data.get('url', '')
-    
-    if nasa_data.get('media_type') == 'image' and image_url:
-        # Add image as both file and text artifact for maximum compatibility
-        artifacts.append(Artifact(
-            name="nasa_image",
-            parts=[
-                MessagePart(kind="file", file_url=image_url),
-                MessagePart(kind="text", text=f"NASA Image: {image_url}")
-            ]
-        ))
-        
-        # Also add a separate text artifact with the URL
-        artifacts.append(Artifact(
-            name="image_url",
-            parts=[MessagePart(kind="text", text=image_url)]
-        ))
-    
-    artifacts.append(Artifact(
-        name="image_title",
-        parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
-    ))
-    
-    task_id = user_message.taskId or str(uuid4())
-    
-    return TaskResult(
-        id=task_id,
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=artifacts,
-        history=[user_message, response_message]
-    )
-def get_fallback_response():
-    """Return fallback response with sample image when NASA API fails"""
-    return {
-        "title": "Hubble Space Telescope View",
-        "explanation": "This is a sample space image since NASA's servers are temporarily unavailable. The Hubble Space Telescope has captured stunning views of distant galaxies, nebulae, and star clusters, revealing the beauty of our universe.",
-        "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
-        "media_type": "image",
-        "date": datetime.now().strftime("%Y-%m-%d")
-    }
-async def get_random_apod_data():
-    """Get random APOD from archive"""
-    import random
-    from datetime import datetime, timedelta
-    
-    # NASA APOD started June 16, 1995
-    start_date = datetime(1995, 6, 16)
-    end_date = datetime.now()
-    random_date = start_date + timedelta(
-        days=random.randint(0, (end_date - start_date).days)
-    )
-    
-    return await get_nasa_apod_data(random_date.strftime("%Y-%m-%d"))
-
-async def get_yesterday_apod_data():
-    """Get yesterday's APOD"""
-    from datetime import datetime, timedelta
-    yesterday = datetime.now() - timedelta(days=1)
-    return await get_nasa_apod_data(yesterday.strftime("%Y-%m-%d"))
-
-async def get_space_fact_response(user_message: A2AMessage):
-    """Return space fact response"""
-    space_facts = [
-        "A day on Mercury lasts 59 Earth days!",
-        "Neptune's winds can reach 1,600 km/h - the fastest in the solar system!",
-        "There are more stars in the universe than grains of sand on all Earth's beaches!",
-        "A teaspoon of neutron star would weigh about 6 billion tons!",
-        "Venus is the only planet that spins clockwise!",
-        "The Sun makes up 99.86% of the mass in our solar system!",
-    ]
-    
-    import random
-    fact = random.choice(space_facts)
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=f"🌌 *Space Fact* 🌌\n\n{fact}")],
-        messageId=str(uuid4()),
-        taskId=user_message.taskId
-    )
-    
-    return TaskResult(
-        id=user_message.taskId or str(uuid4()),
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=[
-            Artifact(
-                name="space_fact",
-                parts=[MessagePart(kind="text", text=fact)]
-            )
-        ],
-        history=[user_message, response_message]
-    )
 
 def format_nasa_response(data):
-    """Format NASA data into nice response with proper image display"""
+    """Format NASA data into nice response"""
     title = data.get('title', 'Unknown Title')
     explanation = data.get('explanation', 'No description available.')
     date = data.get('date', 'Unknown date')
-    image_url = data.get('url', '')
     
     # Truncate long explanations
-    if len(explanation) > 800:
-        explanation = explanation[:800] + "..."
+    if len(explanation) > 600:
+        explanation = explanation[:600] + "..."
     
-    # FORCE IMAGE DISPLAY - Multiple formats for Telex compatibility
     response_text = f"""🌌 *{title}* 🌌
 
 {explanation}
 
-🖼️ **Image:** {image_url}
-
-*Details:*
-📅 Date: {date}
-🖼️ Media Type: {data.get('media_type', 'image')}
-
-📸 *View Image:* {image_url}
+*Date:* {date}
+*Media Type:* {data.get('media_type', 'image')}
 
 *Explore the cosmos!* 🚀"""
     
     return response_text
-
 
 @app.get("/")
 async def root():
     return {
         "message": "NASA Space Explorer Agent is running!",
         "status": "healthy", 
-        "version": "2.0.0",
+        "version": "2.1.0",
         "protocol": "A2A Compliant",
-        "endpoints": {
-            "POST /a2a/nasa": "Main A2A endpoint",
-            "GET /health": "Health check",
-            "GET /test": "Test NASA connection"
+        "features": {
+            "caching": "Enabled (1 hour)",
+            "fallback_images": f"{len(FALLBACK_IMAGES)} available",
+            "timeout": "15 seconds",
+            "space_facts": f"{len(SPACE_FACTS)} available"
         }
     }
 
@@ -607,6 +556,7 @@ async def test_endpoint():
         return {
             "nasa_api_status": "connected",
             "agent_status": "healthy",
+            "cache_size": len(nasa_cache),
             "sample_data": {
                 "title": data.get('title'),
                 "media_type": data.get('media_type')
