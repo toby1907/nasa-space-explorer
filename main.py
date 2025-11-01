@@ -265,7 +265,7 @@ async def process_message_directly(user_message, request_id):
     
     return await create_nasa_response(nasa_data, mock_user_message)  # Use the new function
 async def handle_message_send(params: MessageParams):
-    """Handle message/send - CLEANED AND FIXED VERSION"""
+    """Handle message/send - EXTRACT ONLY LATEST COMMAND"""
     print("=== DEBUG: handle_message_send called ===")
     
     # EXTRACT USER MESSAGE from text parts
@@ -283,38 +283,45 @@ async def handle_message_send(params: MessageParams):
     if user_text:
         print(f"DEBUG: Processing user text: '{user_text}'")
         
-        # EXTRACT THE LATEST COMMAND
         import re
         
         # Remove HTML tags and clean text
-        clean_text = re.sub('<[^<]+?>', '', user_text).lower()
-        clean_text = clean_text.replace("'", "").replace('"', '').replace('&nbsp;', ' ')
+        clean_text = re.sub('<[^<]+?>', '', user_text)
+        clean_text = clean_text.replace('&nbsp;', ' ').strip()
         print(f"DEBUG: Clean text: '{clean_text}'")
         
-        # Split into individual messages and get the LAST one
-        messages = re.split(r'\s{2,}', clean_text)
-        if messages:
-            latest_message = messages[-1].strip()
-            print(f"DEBUG: Latest message: '{latest_message}'")
+        # CRITICAL FIX: Get only the VERY LAST message after the last <p></p>
+        # Split by <p> tags and get the content after the last closing </p>
+        segments = clean_text.split('</p>')
+        if segments:
+            last_segment = segments[-1].strip()
+            print(f"DEBUG: Last segment: '{last_segment}'")
             
-            # Check the LATEST command only
-            if "space fact" in latest_message or "random fact" in latest_message:
+            # Extract the actual text (remove any remaining <p> tags)
+            actual_message = re.sub('<[^<]+?>', '', last_segment).strip()
+            print(f"DEBUG: Actual message: '{actual_message}'")
+            
+            # Now check only this actual message for commands
+            clean_message = actual_message.lower().replace("'", "")
+            print(f"DEBUG: Clean message for command check: '{clean_message}'")
+            
+            if "space fact" in clean_message or "random fact" in clean_message:
                 command = "space fact"
-            elif "random image" in latest_message:
+            elif "random image" in clean_message:
                 command = "random image"
-            elif "yesterday" in latest_message:
+            elif "yesterday" in clean_message:
                 command = "yesterday's image"
-            elif "today" in latest_message:
+            elif "today" in clean_message:
                 command = "today's image"
-            elif "help" in latest_message:
+            elif "help" in clean_message:
                 command = "help"
     
-    print(f"DEBUG: Final command: '{command}'")
+    print(f"🚀 DEBUG: FINAL COMMAND: '{command}'")
     
-    # Process the command - FIXED PARAMETERS
+    # Process the command
     if command == "space fact":
         print("🚀 DEBUG: Returning space fact")
-        return await get_space_fact_response(params.message)  # Use existing function
+        return await get_space_fact_response(params.message)
     elif command == "random image":
         print("DEBUG: Returning random NASA image")
         nasa_data = await get_random_apod_data()
@@ -323,7 +330,6 @@ async def handle_message_send(params: MessageParams):
         nasa_data = await get_yesterday_apod_data()
     elif command == "help":
         print("DEBUG: Returning help")
-        # Create a simple help response directly
         help_text = """🛰️ *NASA Space Explorer Commands* 🛰️
 
 Available commands:
@@ -356,7 +362,6 @@ Try: "today's image" to see today's space wonder! 🚀"""
         print("DEBUG: Returning today's NASA image")
         nasa_data = await get_nasa_apod_data()
     
-    # Make sure create_nasa_response function exists and takes correct parameters
     return await create_nasa_response(nasa_data, params.message)
 async def handle_execute(params: ExecuteParams):
     """Handle execute method (for multiple messages)"""
