@@ -265,74 +265,88 @@ async def process_message_directly(user_message, request_id):
     
     return await create_nasa_response(nasa_data, mock_user_message)  # Use the new function
 async def handle_message_send(params: MessageParams):
-    """Handle message/send - UPDATED FOR TEST IMAGE"""
+    """Handle message/send - COMPLETE DEBUGGING"""
     print("=== DEBUG: handle_message_send called ===")
+    print(f"DEBUG: Full message parts: {params.message.parts}")
     
-    # EXTRACT USER MESSAGE from text parts
+    # EXTRACT USER MESSAGE from all possible locations
     user_text = ""
-    for part in params.message.parts:
-        print(f"DEBUG: Part - kind: {part.kind}, text: {part.text}")
+    for i, part in enumerate(params.message.parts):
+        print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text}, data: {part.data}")
+        
+        # Check text parts
         if part.kind == "text" and part.text and part.text.strip():
             user_text = part.text
             print(f"DEBUG: Found text in parts: '{user_text}'")
             break
-    
-    # SIMPLE APPROACH: Just look for the LAST word or two
-    command = "today's image"  # default
-    
-    if user_text:
-        print(f"DEBUG: Processing user text: '{user_text}'")
         
-        # Remove any HTML tags if present
-        import re
-        clean_text = re.sub('<[^<]+?>', '', user_text).strip()
-        print(f"DEBUG: Clean text: '{clean_text}'")
-        
-        # ULTRA-SIMPLE: Get the last 1-3 words as the command
-        words = clean_text.split()
-        if words:
-            # Try last 1-3 words as potential command
-            potential_commands = [
-                ' '.join(words[-3:]),  # Last 3 words
-                ' '.join(words[-2:]),  # Last 2 words  
-                words[-1]              # Last word
-            ]
-            
-            print(f"DEBUG: Potential commands: {potential_commands}")
-            
-            for potential_cmd in potential_commands:
-                clean_cmd = potential_cmd.lower().replace("'", "")
-                print(f"DEBUG: Checking: '{clean_cmd}'")
-                
-                # ADD "test image" FIRST so it gets priority
-                if "test image" in clean_cmd:
-                    command = "test image"
-                    break
-                elif "space fact" in clean_cmd or "random fact" in clean_cmd:
-                    command = "space fact"
-                    break
-                elif "random image" in clean_cmd:
-                    command = "random image"
-                    break
-                elif "yesterday" in clean_cmd:
-                    command = "yesterday's image"
-                    break
-                elif "today" in clean_cmd:
-                    command = "today's image"
-                    break
-                elif "help" in clean_cmd:
-                    command = "help"
-                    break
+        # Check data parts that might contain the message
+        if part.kind == "data" and part.data:
+            print(f"DEBUG: Found data part: {part.data}")
+            # Sometimes the message is in data parts
+            if isinstance(part.data, list):
+                for data_item in part.data:
+                    if isinstance(data_item, dict) and data_item.get('kind') == 'text':
+                        potential_text = data_item.get('text', '')
+                        if potential_text and potential_text.strip():
+                            user_text = potential_text
+                            print(f"DEBUG: Found text in data: '{user_text}'")
+                            break
+    
+    # If still no text, try a different approach
+    if not user_text:
+        print("DEBUG: No text found in normal parts, checking alternative locations")
+        # Sometimes Telex puts the message in different structures
+        try:
+            # Convert the whole message to dict and search for text
+            message_dict = params.message.dict()
+            import json
+            print(f"DEBUG: Full message structure: {json.dumps(message_dict, indent=2)}")
+        except Exception as e:
+            print(f"DEBUG: Could not dump message structure: {e}")
+    
+    # SIMPLE FALLBACK: If we can't find the user's message, just return a test image
+    if not user_text:
+        print("🚀 DEBUG: No user text found - returning test image by default")
+        test_data = {
+            "title": "Hubble Space Telescope View", 
+            "explanation": "Since we couldn't detect your specific command, here's a beautiful space image from the Hubble Space Telescope showing distant galaxies and nebulae.",
+            "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
+            "media_type": "image",
+            "date": "2024-01-01"
+        }
+        return await create_nasa_response(test_data, params.message)
+    
+    # If we found text, process it normally
+    print(f"DEBUG: Processing user text: '{user_text}'")
+    
+    # ULTRA-SIMPLE COMMAND DETECTION
+    command = "test image"  # Default to test image for now
+    
+    clean_text = user_text.lower().replace("'", "").replace('"', '')
+    
+    if "test image" in clean_text:
+        command = "test image"
+    elif "space fact" in clean_text or "random fact" in clean_text:
+        command = "space fact"
+    elif "random image" in clean_text:
+        command = "random image" 
+    elif "yesterday" in clean_text:
+        command = "yesterday's image"
+    elif "today" in clean_text:
+        command = "today's image"
+    elif "help" in clean_text:
+        command = "help"
     
     print(f"🚀 DEBUG: FINAL COMMAND: '{command}'")
     
-    # Process the command - ADD TEST IMAGE HANDLING
+    # Process the command
     if command == "test image":
         print("🚀 DEBUG: Returning test image")
         test_data = {
-            "title": "TEST: Orion Nebula", 
-            "explanation": "This is a test image to verify image display in Telex chat. The Orion Nebula is one of the brightest nebulae visible to the naked eye.",
-            "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
+            "title": "TEST: Orion Nebula",
+            "explanation": "This is a test image to verify image display in Telex chat. The Orion Nebula is one of the brightest nebulae in the night sky.",
+            "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg", 
             "media_type": "image",
             "date": "2024-01-01"
         }
@@ -348,17 +362,17 @@ async def handle_message_send(params: MessageParams):
         nasa_data = await get_yesterday_apod_data()
     elif command == "help":
         print("DEBUG: Returning help")
-        help_text = """🛰️ *NASA Space Explorer Commands* 🛰️
+        help_text = """🛰️ *NASA Space Explorer* 🛰️
 
-Available commands:
-• "today's image" - Today's Astronomy Picture of the Day
-• "random image" - Random space image from NASA's archive
-• "yesterday's image" - Yesterday's astronomy picture
-• "space fact" or "random fact" - Interesting space facts
+Commands:
+• "today's image" - NASA Astronomy Picture
+• "random image" - Random space image  
+• "yesterday's image" - Yesterday's picture
+• "space fact" - Interesting space facts
 • "test image" - Test image display
-• "help" - Show this help message
+• "help" - This message
 
-Try: "test image" to verify image display! 🚀"""
+Try: "test image" to see if images work! 🚀"""
         
         response_message = A2AMessage(
             role="agent",
