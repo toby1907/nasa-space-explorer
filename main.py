@@ -12,7 +12,7 @@ from typing import Literal, Optional, List, Dict, Any
 class MessagePart(BaseModel):
     kind: Literal["text", "data", "file"]
     text: Optional[str] = None
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[Any] = None
     file_url: Optional[str] = None
 
 class A2AMessage(BaseModel):
@@ -84,13 +84,16 @@ app.add_middleware(
 NASA_APOD_URL = "https://api.nasa.gov/planetary/apod"
 NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
 
+from pydantic import ValidationError
+import json
+
 @app.post("/a2a/nasa")
 async def a2a_endpoint(request: Request):
-    """Fully A2A compliant endpoint"""
+    """A2A endpoint that handles Telex's invalid data format"""
     try:
         body = await request.json()
         
-        # Validate JSON-RPC 2.0 basics
+        # Validate JSON-RPC 2.0 basics first
         if body.get("jsonrpc") != "2.0" or "id" not in body:
             return JSONResponse(
                 status_code=400,
@@ -104,9 +107,25 @@ async def a2a_endpoint(request: Request):
                 }
             )
         
-        rpc_request = JSONRPCRequest(**body)
+        try:
+            # First try to parse with strict validation
+            rpc_request = JSONRPCRequest(**body)
+        except ValidationError as e:
+            print(f"Validation error: {e}")
+            # Telex is sending invalid data - extract user message manually
+            user_message = extract_user_message_from_telex_body(body)
+            print(f"Extracted user message: '{user_message}'")
+            
+            # Process the message directly
+            result = await process_message_directly(user_message, body.get("id", "telex-fallback"))
+            
+            response = JSONRPCResponse(
+                id=body.get("id", "telex-fallback"),
+                result=result
+            )
+            return response.model_dump()
         
-        # Process based on method
+        # Process based on method (normal flow)
         if rpc_request.method == "message/send":
             result = await handle_message_send(rpc_request.params)
         elif rpc_request.method == "execute":
@@ -132,6 +151,7 @@ async def a2a_endpoint(request: Request):
         return response.model_dump()
         
     except Exception as e:
+        print(f"Unexpected error: {e}")
         return JSONResponse(
             status_code=500,
             content={
@@ -145,6 +165,123 @@ async def a2a_endpoint(request: Request):
             }
         )
 
+def extract_user_message_from_telex_body(body):
+    """Extract user message from Telex's invalid request format"""
+    try:
+        # Telex sends message in: body['params']['message']['parts'][0]['text']
+        message_parts = body.get('params', {}).get('message', {}).get('parts', [])
+        
+        for part in message_parts:
+            if part.get('kind') == 'text' and part.get('text'):
+                text = part['text']
+                # Clean up HTML tags and extract the actual user message
+                if '<p>' in text:
+                    # Extract text from the first <p> tags (user message)
+                    import re
+                    clean_text = re.sub('<[^<]+?>', '', text).strip()
+                    # Get the first meaningful part (before system messages)
+                    user_parts = clean_text.split('  ')
+                    if user_parts:
+                        return user_parts[0].strip()
+                else:
+                    return text.strip()
+        
+        return "today's image"  # Default fallback
+        
+    except Exception as e:
+        print(f"Error extracting message: {e}")
+        return "today's image"  # Default fallback
+
+async def process_message_directly(user_message, request_id):
+    """Process message directly when Telex sends invalid format"""
+    user_text = user_message.lower().strip()
+    
+    print(f"Processing direct message: '{user_text}'")
+    
+    # Your existing command logic
+    if "fact" in user_text:
+        return await create_space_fact_response(request_id)
+    elif "random" in user_text and "fact" not in user_text:
+        nasa_data = await get_random_apod_data()
+    elif "yesterday" in user_text:
+        nasa_data = await get_yesterday_apod_data()
+    else:
+        nasa_data = await get_nasa_apod_data()
+    
+    return await create_nasa_response(nasa_data, request_id)
+
+async def create_space_fact_response(request_id):
+    """Create space fact response"""
+    space_facts = [
+        "A day on Mercury lasts 59 Earth days!",
+        "Neptune's winds can reach 1,600 km/h - the fastest in the solar system!",
+        "There are more stars in the universe than grains of sand on all Earth's beaches!",
+        "A teaspoon of neutron star would weigh about 6 billion tons!",
+        "Venus is the only planet that spins clockwise!",
+        "The Sun makes up 99.86% of the mass in our solar system!",
+    ]
+    
+    import random
+    fact = random.choice(space_facts)
+    
+    response_text = f"🌌 *Space Fact* 🌌\n\n{fact}"
+    
+    response_message = A2AMessage(
+        role="agent",
+        parts=[MessagePart(kind="text", text=response_text)],
+        messageId=str(uuid4()),
+        taskId=None
+    )
+    
+    return TaskResult(
+        id=request_id,
+        contextId=str(uuid4()),
+        status=TaskStatus(
+            state="completed",
+            message=response_message
+        ),
+        artifacts=[
+            Artifact(
+                name="space_fact",
+                parts=[MessagePart(kind="text", text=fact)]
+            )
+        ],
+        history=[response_message]  # Minimal history for invalid requests
+    )
+
+async def create_nasa_response(nasa_data, request_id):
+    """Create NASA response with the given request ID"""
+    response_text = format_nasa_response(nasa_data)
+    
+    response_message = A2AMessage(
+        role="agent",
+        parts=[MessagePart(kind="text", text=response_text)],
+        messageId=str(uuid4()),
+        taskId=None
+    )
+    
+    artifacts = []
+    if nasa_data.get('media_type') == 'image' and nasa_data.get('url'):
+        artifacts.append(Artifact(
+            name="nasa_image",
+            parts=[MessagePart(kind="file", file_url=nasa_data['url'])]
+        ))
+    
+    artifacts.append(Artifact(
+        name="image_title",
+        parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
+    ))
+    
+    return TaskResult(
+        id=request_id,
+        contextId=str(uuid4()),
+        status=TaskStatus(
+            state="completed",
+            message=response_message
+        ),
+        artifacts=artifacts,
+        history=[response_message]
+    )
 async def handle_message_send(params: MessageParams):
     """Handle message/send method"""
      # DEBUG: Log the entire request
