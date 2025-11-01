@@ -360,7 +360,7 @@ async def create_nasa_response(nasa_data, request_id):
         history=[response_message]
     )
 async def handle_message_send(params: MessageParams):
-    """Handle message/send - WITH IMPROVED COMMAND DETECTION"""
+    """Handle message/send - EXTRACT LATEST COMMAND"""
     print("=== DEBUG: handle_message_send called ===")
     
     # EXTRACT USER MESSAGE MANUALLY from the valid A2A request
@@ -375,27 +375,41 @@ async def handle_message_send(params: MessageParams):
     if user_text:
         print(f"DEBUG: Processing user text: '{user_text}'")
         
-        # BULLETPROOF COMMAND DETECTION (handle apostrophes and variations)
-        clean_text = user_text.lower().replace("'", "").replace('"', '')
+        # EXTRACT THE LATEST COMMAND (most recent)
+        import re
+        
+        # Remove HTML tags and clean text
+        clean_text = re.sub('<[^<]+?>', '', user_text).lower()
+        clean_text = clean_text.replace("'", "").replace('"', '').replace('&nbsp;', ' ')
         print(f"DEBUG: Clean text: '{clean_text}'")
         
-        if "space fact" in clean_text or "random fact" in clean_text:
-            print("🚀 DEBUG: FOUND SPACE FACT COMMAND!")
-            return await create_space_fact_response(params.message)
-        elif "random image" in clean_text:
-            print("DEBUG: Found 'random image'")
-            nasa_data = await get_random_apod_data()
-        elif "yesterday" in clean_text:
-            print("DEBUG: Found 'yesterday'")
-            nasa_data = await get_yesterday_apod_data()
-        elif "today" in clean_text or "todays image" in clean_text:
-            print("🚀 DEBUG: FOUND TODAY'S IMAGE COMMAND!")
-            nasa_data = await get_nasa_apod_data()
-        elif "help" in clean_text:
-            print("DEBUG: Found 'help'")
-            return await create_help_response(params.message)
+        # Split into individual messages and get the LAST one
+        messages = re.split(r'\s{2,}', clean_text)  # Split by multiple spaces
+        if messages:
+            latest_message = messages[-1].strip()
+            print(f"DEBUG: Latest message: '{latest_message}'")
+            
+            # Check the LATEST command only
+            if "space fact" in latest_message or "random fact" in latest_message:
+                print("🚀 DEBUG: LATEST COMMAND IS SPACE FACT!")
+                return await create_space_fact_response(params.message)
+            elif "random image" in latest_message:
+                print("DEBUG: Latest command is 'random image'")
+                nasa_data = await get_random_apod_data()
+            elif "yesterday" in latest_message:
+                print("DEBUG: Latest command is 'yesterday'")
+                nasa_data = await get_yesterday_apod_data()
+            elif "today" in latest_message:
+                print("🚀 DEBUG: LATEST COMMAND IS TODAY'S IMAGE!")
+                nasa_data = await get_nasa_apod_data()
+            elif "help" in latest_message:
+                print("DEBUG: Latest command is 'help'")
+                return await create_help_response(params.message)
+            else:
+                print("DEBUG: No specific command in latest message, defaulting to today's image")
+                nasa_data = await get_nasa_apod_data()
         else:
-            print("DEBUG: No specific command found, defaulting to today's image")
+            print("DEBUG: No messages found, defaulting to today's image")
             nasa_data = await get_nasa_apod_data()
     else:
         print("DEBUG: No user text found, defaulting to today's image")
