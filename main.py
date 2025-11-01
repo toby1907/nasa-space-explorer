@@ -73,7 +73,7 @@ class JSONRPCResponse(BaseModel):
 app = FastAPI(
     title="NASA Space Explorer Agent - A2A Compliant",
     description="A fully A2A protocol compliant NASA Astronomy Picture agent",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 app.add_middleware(
@@ -88,11 +88,11 @@ app.add_middleware(
 NASA_APOD_URL = "https://api.nasa.gov/planetary/apod"
 NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
 
-# Cache for NASA responses to avoid repeated API calls
+# Cache for NASA responses
 nasa_cache = {}
 CACHE_DURATION = 3600  # 1 hour
 
-# Pre-defined fallback images for when NASA API fails
+# Pre-defined fallback images
 FALLBACK_IMAGES = [
     {
         "title": "Hubble Space Telescope View",
@@ -132,7 +132,7 @@ SPACE_FACTS = [
 
 @app.post("/a2a/nasa")
 async def a2a_endpoint(request: Request):
-    """A2A endpoint that handles Telex's invalid data format"""
+    """A2A endpoint that handles both valid and invalid data formats"""
     try:
         body = await request.json()
         
@@ -155,31 +155,48 @@ async def a2a_endpoint(request: Request):
         try:
             # First try to parse with strict validation
             rpc_request = JSONRPCRequest(**body)
-            method = rpc_request.method
-            params = rpc_request.params
+            print(f"DEBUG: Valid JSON-RPC request - method: {rpc_request.method}")
+            
+            # Process based on method using the proper objects
+            if rpc_request.method == "message/send":
+                result = await handle_message_send_proper(rpc_request.params, request_id)
+            elif rpc_request.method == "execute":
+                result = await handle_execute_proper(rpc_request.params, request_id)
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Method not found: {rpc_request.method}"
+                        }
+                    }
+                )
+                
         except Exception as e:
-            print(f"Validation error, using fallback parsing: {e}")
+            print(f"DEBUG: Validation failed, using fallback: {e}")
             # Use fallback parsing for Telex's non-standard format
             method = body.get("method", "message/send")
             params = body.get("params", {})
-        
-        # Process based on method
-        if method == "message/send":
-            result = await handle_message_send_fallback(params, request_id)
-        elif method == "execute":
-            result = await handle_execute_fallback(params, request_id)
-        else:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Method not found: {method}"
+            
+            if method == "message/send":
+                result = await handle_message_send_fallback(params, request_id)
+            elif method == "execute":
+                result = await handle_execute_fallback(params, request_id)
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": f"Method not found: {method}"
+                        }
                     }
-                }
-            )
+                )
         
         response = JSONRPCResponse(
             id=request_id,
@@ -203,11 +220,33 @@ async def a2a_endpoint(request: Request):
             }
         )
 
+async def handle_message_send_proper(params: MessageParams, request_id: str):
+    """Handle message/send with proper Pydantic objects"""
+    print("=== DEBUG: handle_message_send_proper called ===")
+    
+    # Extract user message from the proper MessageParams object
+    user_message = extract_user_message_from_proper_params(params)
+    print(f"🚀 DEBUG: EXTRACTED USER MESSAGE: '{user_message}'")
+    
+    # Process the command
+    return await process_user_command(user_message, request_id)
+
+async def handle_execute_proper(params: ExecuteParams, request_id: str):
+    """Handle execute with proper Pydantic objects"""
+    if params.messages:
+        # Use the last message
+        last_message = params.messages[-1]
+        user_message = extract_user_message_from_a2a_message(last_message)
+    else:
+        user_message = "today's image"
+    
+    return await process_user_command(user_message, request_id)
+
 async def handle_message_send_fallback(params: dict, request_id: str):
-    """Handle message/send with fallback parsing"""
+    """Handle message/send with fallback parsing for dict params"""
     print("=== DEBUG: handle_message_send_fallback called ===")
     
-    # Extract user message from various possible locations
+    # Extract user message from dictionary params
     user_message = extract_user_message_robust(params)
     print(f"🚀 DEBUG: EXTRACTED USER MESSAGE: '{user_message}'")
     
@@ -215,16 +254,49 @@ async def handle_message_send_fallback(params: dict, request_id: str):
     return await process_user_command(user_message, request_id)
 
 async def handle_execute_fallback(params: dict, request_id: str):
-    """Handle execute with fallback parsing"""
+    """Handle execute with fallback parsing for dict params"""
     messages = params.get('messages', [])
     if messages:
         # Use the last message
         last_message = messages[-1]
-        user_message = extract_user_message_from_a2a_message(last_message)
+        user_message = extract_user_message_from_dict_message(last_message)
     else:
         user_message = "today's image"
     
     return await process_user_command(user_message, request_id)
+
+def extract_user_message_from_proper_params(params: MessageParams) -> str:
+    """Extract user message from proper MessageParams object"""
+    try:
+        parts = params.message.parts
+        print(f"DEBUG: Found {len(parts)} parts in proper params")
+        
+        for i, part in enumerate(parts):
+            print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text[:100] if part.text else 'None'}")
+            
+            # Direct text part
+            if part.kind == 'text' and part.text and part.text.strip():
+                clean_text = clean_user_input(part.text)
+                if clean_text:
+                    return clean_text
+            
+            # Data part that might contain text
+            if part.kind == 'data' and part.data:
+                if isinstance(part.data, list):
+                    for data_item in part.data:
+                        if isinstance(data_item, dict) and data_item.get('kind') == 'text':
+                            text_content = data_item.get('text', '')
+                            if text_content and text_content.strip():
+                                clean_text = clean_user_input(text_content)
+                                if clean_text:
+                                    return clean_text
+        
+        # Default fallback
+        return "today's image"
+            
+    except Exception as e:
+        print(f"ERROR in proper params extraction: {e}")
+        return "today's image"
 
 def extract_user_message_robust(params: dict) -> str:
     """Extract user message from params with robust parsing"""
@@ -282,8 +354,18 @@ def extract_user_message_robust(params: dict) -> str:
     # Default fallback
     return "today's image"
 
-def extract_user_message_from_a2a_message(message: dict) -> str:
-    """Extract user message from A2A message format"""
+def extract_user_message_from_a2a_message(message: A2AMessage) -> str:
+    """Extract user message from A2A message object"""
+    parts = message.parts
+    for part in parts:
+        if part.kind == 'text' and part.text:
+            clean_text = clean_user_input(part.text)
+            if clean_text:
+                return clean_text
+    return "today's image"
+
+def extract_user_message_from_dict_message(message: dict) -> str:
+    """Extract user message from dictionary message"""
     parts = message.get('parts', [])
     for part in parts:
         if part.get('kind') == 'text' and part.get('text'):
@@ -357,8 +439,8 @@ async def get_nasa_apod_data(date=None):
             
         print(f"DEBUG: Calling NASA API: {url}")
         
-        # Increased timeout with retry logic
-        timeout = aiohttp.ClientTimeout(total=15)  # Increased to 15 seconds
+        # Shorter timeout for faster fallback - NASA API is often slow
+        timeout = aiohttp.ClientTimeout(total=8)  # 8 seconds timeout
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
@@ -534,12 +616,12 @@ async def root():
     return {
         "message": "NASA Space Explorer Agent is running!",
         "status": "healthy", 
-        "version": "2.1.0",
+        "version": "2.2.0",
         "protocol": "A2A Compliant",
         "features": {
             "caching": "Enabled (1 hour)",
             "fallback_images": f"{len(FALLBACK_IMAGES)} available",
-            "timeout": "15 seconds",
+            "timeout": "8 seconds",
             "space_facts": f"{len(SPACE_FACTS)} available"
         }
     }
