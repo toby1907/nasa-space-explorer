@@ -383,44 +383,90 @@ def extract_user_message_from_a2a_message(message: A2AMessage) -> str:
                 return clean_text
     return "today's image"
 
-def extract_user_message_from_dict_message(message: dict) -> str:
-    """Extract user message from dictionary message"""
-    parts = message.get('parts', [])
-    for part in parts:
-        if part.get('kind') == 'text' and part.get('text'):
-            clean_text = clean_user_input(part['text'])
-            if clean_text:
-                return clean_text
-    return "today's image"
-
+def extract_user_message_from_proper_params(params: MessageParams) -> str:
+    """Extract user message from proper MessageParams object"""
+    try:
+        parts = params.message.parts
+        print(f"DEBUG: Found {len(parts)} parts in proper params")
+        
+        all_texts = []
+        for i, part in enumerate(parts):
+            print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text[:200] if part.text else 'None'}")
+            
+            # Direct text part
+            if part.kind == 'text' and part.text and part.text.strip():
+                all_texts.append(part.text)
+                clean_text = clean_user_input(part.text)
+                if clean_text:
+                    print(f"🚀 DEBUG: EXTRACTED COMMAND: '{clean_text}'")
+                    return clean_text
+            
+            # Data part that might contain text
+            if part.kind == 'data' and part.data:
+                print(f"DEBUG: Processing data part: {part.data}")
+                if isinstance(part.data, list):
+                    for data_item in part.data:
+                        if isinstance(data_item, dict) and data_item.get('kind') == 'text':
+                            text_content = data_item.get('text', '')
+                            if text_content and text_content.strip():
+                                all_texts.append(text_content)
+                                clean_text = clean_user_input(text_content)
+                                if clean_text:
+                                    print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA: '{clean_text}'")
+                                    return clean_text
+                elif isinstance(part.data, str):
+                    all_texts.append(part.data)
+                    clean_text = clean_user_input(part.data)
+                    if clean_text:
+                        print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA STRING: '{clean_text}'")
+                        return clean_text
+        
+        print(f"DEBUG: All texts found: {all_texts}")
+        # Default fallback
+        return "today's image"
+            
+    except Exception as e:
+        print(f"ERROR in proper params extraction: {e}")
+        return "today's image"
 def clean_user_input(text: str) -> str:
-    """Clean and normalize user input text"""
+    """Clean and normalize user input text - FIXED VERSION"""
     if not text or not text.strip():
         return ""
     
     # Remove HTML tags and extra whitespace
     import re
     clean_text = re.sub('<[^<]+?>', '', text)  # Remove HTML tags
+    clean_text = ' '.join(clean_text.split())  # Normalize whitespace
     clean_text = clean_text.strip()
     
-    # Simple command detection
+    print(f"DEBUG: Raw text: '{text}' -> Cleaned: '{clean_text}'")
+    
+    # Handle the specific case of repeated "test image" commands
     clean_text_lower = clean_text.lower()
     
-    if any(cmd in clean_text_lower for cmd in ['space fact', 'random fact']):
+    # Check for exact matches first
+    if 'test image' in clean_text_lower:
+        print("DEBUG: Detected 'test image' command")
+        return "test image"
+    elif 'space fact' in clean_text_lower or 'random fact' in clean_text_lower:
+        print("DEBUG: Detected 'space fact' command")
         return "space fact"
     elif 'random image' in clean_text_lower:
+        print("DEBUG: Detected 'random image' command")
         return "random image"
     elif 'yesterday' in clean_text_lower:
+        print("DEBUG: Detected 'yesterday's image' command")
         return "yesterday's image"
     elif 'today' in clean_text_lower:
+        print("DEBUG: Detected 'today's image' command")
         return "today's image"
     elif 'help' in clean_text_lower:
+        print("DEBUG: Detected 'help' command")
         return "help"
-    elif 'test' in clean_text_lower:
-        return "test image"
     
-    return clean_text
-
+    # If no specific command found, default to today's image
+    print("DEBUG: No specific command detected, defaulting to today's image")
+    return "today's image"
 async def process_user_command(command: str, request_id: str):
     """Process user command and return appropriate response"""
     print(f"🚀 PROCESSING COMMAND: '{command}'")
