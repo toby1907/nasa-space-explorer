@@ -174,15 +174,25 @@ def extract_user_message_from_telex_body(body):
         for part in message_parts:
             if part.get('kind') == 'text' and part.get('text'):
                 text = part['text']
+                print(f"DEBUG: Raw text from Telex: '{text}'")
+                
+                # Look for "random fact" command specifically
+                if "random fact" in text.lower():
+                    return "random fact"
+                
                 # Clean up HTML tags and extract the actual user message
                 if '<p>' in text:
-                    # Extract text from the first <p> tags (user message)
                     import re
                     clean_text = re.sub('<[^<]+?>', '', text).strip()
-                    # Get the first meaningful part (before system messages)
+                    # Get the first part before system messages
                     user_parts = clean_text.split('  ')
                     if user_parts:
-                        return user_parts[0].strip()
+                        first_part = user_parts[0].strip()
+                        # Check if it's a valid command
+                        if any(cmd in first_part.lower() for cmd in ["random fact", "today", "yesterday", "space"]):
+                            return first_part
+                
+                # If no HTML, return the clean text
                 else:
                     return text.strip()
         
@@ -191,15 +201,18 @@ def extract_user_message_from_telex_body(body):
     except Exception as e:
         print(f"Error extracting message: {e}")
         return "today's image"  # Default fallback
-
 async def process_message_directly(user_message, request_id):
     """Process message directly when Telex sends invalid format"""
     user_text = user_message.lower().strip()
     
     print(f"Processing direct message: '{user_text}'")
     
-    # Your existing command logic
-    if "fact" in user_text:
+    # Check for "random fact" FIRST
+    if "random fact" in user_text:
+        print("DEBUG: Returning space fact")
+        return await create_space_fact_response(request_id)
+    elif "fact" in user_text:
+        print("DEBUG: Returning space fact (fallback)")
         return await create_space_fact_response(request_id)
     elif "random" in user_text and "fact" not in user_text:
         nasa_data = await get_random_apod_data()
@@ -209,7 +222,6 @@ async def process_message_directly(user_message, request_id):
         nasa_data = await get_nasa_apod_data()
     
     return await create_nasa_response(nasa_data, request_id)
-
 async def create_space_fact_response(request_id):
     """Create space fact response"""
     space_facts = [
