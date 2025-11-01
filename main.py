@@ -73,7 +73,7 @@ class JSONRPCResponse(BaseModel):
 app = FastAPI(
     title="NASA Space Explorer Agent - A2A Compliant",
     description="A fully A2A protocol compliant NASA Astronomy Picture agent",
-    version="2.4.0"
+    version="2.5.0"
 )
 
 app.add_middleware(
@@ -95,42 +95,37 @@ CACHE_DURATION = 3600  # 1 hour
 # Pre-defined fallback images with guaranteed working URLs
 FALLBACK_IMAGES = [
     {
-        "title": "Hubble Space Telescope View",
-        "explanation": "The Hubble Space Telescope has revolutionized astronomy with its stunning views of distant galaxies, nebulae, and star clusters. This image showcases the incredible detail Hubble can capture from its orbit above Earth's atmosphere.",
-        "url": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
-        "hdurl": "https://images-assets.nasa.gov/image/PIA12153/PIA12153~large.jpg",
+        "title": "Earth from Space",
+        "explanation": "A beautiful view of our planet Earth from the International Space Station, showing continents and oceans in stunning detail.",
+        "url": "https://apod.nasa.gov/apod/image/2401/ISS045E100257.jpg",
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     },
     {
         "title": "Orion Nebula",
-        "explanation": "The Orion Nebula is one of the brightest nebulae visible to the naked eye. Located in the Milky Way, it's a stellar nursery where new stars are being born from clouds of gas and dust.",
-        "url": "https://images-assets.nasa.gov/image/PIA23122/PIA23122~large.jpg",
-        "hdurl": "https://images-assets.nasa.gov/image/PIA23122/PIA23122~large.jpg",
+        "explanation": "The Orion Nebula is a massive stellar nursery located 1,500 light-years away, where new stars are being born from clouds of gas and dust.",
+        "url": "https://apod.nasa.gov/apod/image/2401/M42M43_Final_Seidel_2048.jpg", 
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     },
     {
-        "title": "Jupiter's Great Red Spot",
-        "explanation": "Jupiter's Great Red Spot is a gigantic storm that has been raging for at least 400 years. This massive anticyclonic storm is larger than Earth and winds can reach speeds of 430 km/h.",
-        "url": "https://images-assets.nasa.gov/image/PIA22946/PIA22946~large.jpg",
-        "hdurl": "https://images-assets.nasa.gov/image/PIA22946/PIA22946~large.jpg",
+        "title": "Moon Surface",
+        "explanation": "Detailed view of the Moon's surface showing craters, mountains, and the dramatic landscapes of our closest celestial neighbor.",
+        "url": "https://apod.nasa.gov/apod/image/2401/MoonCraters_Bourous_2048.jpg",
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     },
     {
-        "title": "Earth from Space",
-        "explanation": "A stunning view of our planet Earth from space, showing continents, oceans, and weather patterns. This perspective reminds us of the beauty and fragility of our home planet.",
-        "url": "https://images-assets.nasa.gov/image/iss061e117120/iss061e117120~large.jpg",
-        "hdurl": "https://images-assets.nasa.gov/image/iss061e117120/iss061e117120~large.jpg",
+        "title": "Jupiter's Storms",
+        "explanation": "Jupiter's turbulent atmosphere showing the famous Great Red Spot and numerous other storm systems in the gas giant's clouds.",
+        "url": "https://apod.nasa.gov/apod/image/2401/Jupiter_Cassini_1080.jpg",
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     },
     {
-        "title": "Mars Rover Panorama",
-        "explanation": "A panoramic view from the Mars rover showing the red planet's surface with its distinctive rust-colored soil and rock formations. Humanity's robotic explorers continue to reveal Mars' secrets.",
-        "url": "https://images-assets.nasa.gov/image/PIA24546/PIA24546~large.jpg",
-        "hdurl": "https://images-assets.nasa.gov/image/PIA24546/PIA24546~large.jpg",
+        "title": "Andromeda Galaxy",
+        "explanation": "Our nearest galactic neighbor, the Andromeda Galaxy, containing over a trillion stars and spanning 220,000 light years across.",
+        "url": "https://apod.nasa.gov/apod/image/2401/M31_2023_08_07_BCD_1024.jpg",
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
     }
@@ -543,43 +538,24 @@ def get_fallback_response():
     return random.choice(FALLBACK_IMAGES)
 
 async def create_nasa_response(nasa_data, request_id):
-    """Create NASA response with better image display for Telex"""
+    """Create NASA response with clickable image URL in text"""
     response_text = format_nasa_response(nasa_data)
-    image_url = nasa_data.get('url', '')
-    
-    print(f"DEBUG: Creating response with image URL: {image_url}")
-    
-    # Create a SIMPLE response that Telex can definitely handle
-    response_parts = []
-    
-    # 1. Main text description
-    response_parts.append(MessagePart(kind="text", text=response_text))
-    
-    # 2. Plain text with markdown image syntax as fallback
-    if nasa_data.get('media_type') == 'image' and image_url:
-        markdown_image = f"![{nasa_data.get('title', 'NASA Image')}]({image_url})"
-        response_parts.append(MessagePart(kind="text", text=markdown_image))
     
     response_message = A2AMessage(
         role="agent",
-        parts=response_parts,
+        parts=[MessagePart(kind="text", text=response_text)],
         messageId=str(uuid4()),
         taskId=request_id
     )
     
+    # Still include artifacts for compatibility, but focus on text response
     artifacts = []
+    image_url = nasa_data.get('url', '')
     
-    # Add image artifacts
     if nasa_data.get('media_type') == 'image' and image_url:
-        # Try multiple artifact types
         artifacts.append(Artifact(
             name="nasa_image",
             parts=[MessagePart(kind="file", file_url=image_url)]
-        ))
-        
-        artifacts.append(Artifact(
-            name="image_display",
-            parts=[MessagePart(kind="text", text=f"IMAGE: {image_url}")]
         ))
     
     return TaskResult(
@@ -652,15 +628,15 @@ Try: "today's image" to see today's space wonder! 🚀"""
     )
 
 def format_nasa_response(data):
-    """Format NASA data into nice response"""
+    """Format NASA data into nice response with clickable image URL"""
     title = data.get('title', 'Unknown Title')
     explanation = data.get('explanation', 'No description available.')
     date = data.get('date', 'Unknown date')
     image_url = data.get('url', '')
     
     # Truncate long explanations
-    if len(explanation) > 400:
-        explanation = explanation[:400] + "..."
+    if len(explanation) > 500:
+        explanation = explanation[:500] + "..."
     
     response_text = f"""🛰️ **{title}** 🛰️
 
@@ -669,10 +645,13 @@ def format_nasa_response(data):
 **Date:** {date}
 **Type:** {data.get('media_type', 'image')}"""
 
-    # Add image URL prominently
+    # Always include clickable image URL prominently
     if data.get('media_type') == 'image' and image_url:
-        response_text += f"\n\n📸 **Image URL:** {image_url}"
-        response_text += f"\n🔗 **Direct Link:** {image_url}"
+        response_text += f"\n\n📸 **View Image:** {image_url}"
+        response_text += f"\n\n🔗 **Click the link above to view the image!**"
+    else:
+        response_text += f"\n\n📺 **Video URL:** {image_url}"
+        response_text += f"\n\n🔗 **Click the link above to watch the video!**"
     
     response_text += "\n\n*Explore the cosmos!* 🚀"
     
@@ -683,13 +662,14 @@ async def root():
     return {
         "message": "NASA Space Explorer Agent is running!",
         "status": "healthy", 
-        "version": "2.4.0",
+        "version": "2.5.0",
         "protocol": "A2A Compliant",
         "features": {
             "caching": "Enabled (1 hour)",
             "fallback_images": f"{len(FALLBACK_IMAGES)} available",
             "timeout": "8 seconds",
-            "space_facts": f"{len(SPACE_FACTS)} available"
+            "space_facts": f"{len(SPACE_FACTS)} available",
+            "image_display": "Clickable URLs in text"
         }
     }
 
