@@ -240,142 +240,50 @@ async def process_message_directly(user_message, request_id):
     """Process command - WITH CLEAR DEBUG"""
     print(f"=== DEBUG: Processing command: '{user_message}' ===")
     
+    # Create a mock user_message object for the direct processing flow
+    mock_user_message = A2AMessage(
+        role="user",
+        parts=[MessagePart(kind="text", text=user_message)],
+        taskId=request_id
+    )
+    
     if user_message == "space fact":
         print("🚀 DEBUG: CONFIRMED - RETURNING SPACE FACT!")
-        return await create_space_fact_response(request_id)
+        return await get_space_fact_response(mock_user_message)  # Use existing function
     elif user_message == "random image":
         print("DEBUG: Returning random NASA image")
         nasa_data = await get_random_apod_data()
     elif user_message == "yesterday's image":
         print("DEBUG: Returning yesterday's NASA image")
         nasa_data = await get_yesterday_apod_data()
+    elif user_message == "help":
+        print("DEBUG: Returning help")
+        return await create_help_response(request_id)
     else:
         print("DEBUG: Defaulting to today's NASA image")
         nasa_data = await get_nasa_apod_data()
     
-    return await create_nasa_response(nasa_data, request_id)
-async def create_space_fact_response(user_message):
-    """Create space fact response"""
-    space_facts = [
-        "A day on Mercury lasts 59 Earth days!",
-        "Neptune's winds can reach 1,600 km/h - the fastest in the solar system!",
-        "There are more stars in the universe than grains of sand on all Earth's beaches!",
-        "A teaspoon of neutron star would weigh about 6 billion tons!",
-        "Venus is the only planet that spins clockwise!",
-        "The Sun makes up 99.86% of the mass in our solar system!",
-    ]
-    
-    import random
-    fact = random.choice(space_facts)
-    
-    response_text = f"🌌 *Space Fact* 🌌\n\n{fact}"
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=response_text)],
-        messageId=str(uuid4()),
-        taskId=user_message.taskId
-    )
-    
-    return TaskResult(
-        id=user_message.taskId or str(uuid4()),
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=[
-            Artifact(
-                name="space_fact",
-                parts=[MessagePart(kind="text", text=fact)]
-            )
-        ],
-        history=[user_message, response_message]
-    )
-
-async def create_nasa_response(nasa_data, user_message):
-    """Create NASA response"""
-    response_text = format_nasa_response(nasa_data)
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=response_text)],
-        messageId=str(uuid4()),
-        taskId=user_message.taskId
-    )
-    
-    artifacts = []
-    if nasa_data.get('media_type') == 'image' and nasa_data.get('url'):
-        artifacts.append(Artifact(
-            name="nasa_image",
-            parts=[MessagePart(kind="file", file_url=nasa_data['url'])]
-        ))
-    
-    artifacts.append(Artifact(
-        name="image_title",
-        parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
-    ))
-    
-    return TaskResult(
-        id=user_message.taskId or str(uuid4()),
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=artifacts,
-        history=[user_message, response_message]
-    )
-async def create_nasa_response(nasa_data, request_id):
-    """Create NASA response with the given request ID"""
-    response_text = format_nasa_response(nasa_data)
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=response_text)],
-        messageId=str(uuid4()),
-        taskId=None
-    )
-    
-    artifacts = []
-    if nasa_data.get('media_type') == 'image' and nasa_data.get('url'):
-        artifacts.append(Artifact(
-            name="nasa_image",
-            parts=[MessagePart(kind="file", file_url=nasa_data['url'])]
-        ))
-    
-    artifacts.append(Artifact(
-        name="image_title",
-        parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
-    ))
-    
-    return TaskResult(
-        id=request_id,
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=artifacts,
-        history=[response_message]
-    )
+    return await create_nasa_response(nasa_data, mock_user_message)  # Use the new function
 async def handle_message_send(params: MessageParams):
-    """Handle message/send - EXTRACT LATEST COMMAND"""
+    """Handle message/send - CLEANED AND FIXED VERSION"""
     print("=== DEBUG: handle_message_send called ===")
     
-    # EXTRACT USER MESSAGE MANUALLY from the valid A2A request
+    # EXTRACT USER MESSAGE from text parts
     user_text = ""
     for part in params.message.parts:
-        if part.kind == "text" and part.text:
+        print(f"DEBUG: Part - kind: {part.kind}, text: {part.text}")
+        if part.kind == "text" and part.text and part.text.strip():
             user_text = part.text
             print(f"DEBUG: Found text in parts: '{user_text}'")
             break
     
-    # Use the NEW command detection logic
+    # Use the command detection logic
+    command = "today's image"  # default
+    
     if user_text:
         print(f"DEBUG: Processing user text: '{user_text}'")
         
-        # EXTRACT THE LATEST COMMAND (most recent)
+        # EXTRACT THE LATEST COMMAND
         import re
         
         # Remove HTML tags and clean text
@@ -384,37 +292,71 @@ async def handle_message_send(params: MessageParams):
         print(f"DEBUG: Clean text: '{clean_text}'")
         
         # Split into individual messages and get the LAST one
-        messages = re.split(r'\s{2,}', clean_text)  # Split by multiple spaces
+        messages = re.split(r'\s{2,}', clean_text)
         if messages:
             latest_message = messages[-1].strip()
             print(f"DEBUG: Latest message: '{latest_message}'")
             
             # Check the LATEST command only
             if "space fact" in latest_message or "random fact" in latest_message:
-                print("🚀 DEBUG: LATEST COMMAND IS SPACE FACT!")
-                return await create_space_fact_response(params.message)
+                command = "space fact"
             elif "random image" in latest_message:
-                print("DEBUG: Latest command is 'random image'")
-                nasa_data = await get_random_apod_data()
+                command = "random image"
             elif "yesterday" in latest_message:
-                print("DEBUG: Latest command is 'yesterday'")
-                nasa_data = await get_yesterday_apod_data()
+                command = "yesterday's image"
             elif "today" in latest_message:
-                print("🚀 DEBUG: LATEST COMMAND IS TODAY'S IMAGE!")
-                nasa_data = await get_nasa_apod_data()
+                command = "today's image"
             elif "help" in latest_message:
-                print("DEBUG: Latest command is 'help'")
-                return await create_help_response(params.message)
-            else:
-                print("DEBUG: No specific command in latest message, defaulting to today's image")
-                nasa_data = await get_nasa_apod_data()
-        else:
-            print("DEBUG: No messages found, defaulting to today's image")
-            nasa_data = await get_nasa_apod_data()
-    else:
-        print("DEBUG: No user text found, defaulting to today's image")
+                command = "help"
+    
+    print(f"DEBUG: Final command: '{command}'")
+    
+    # Process the command - FIXED PARAMETERS
+    if command == "space fact":
+        print("🚀 DEBUG: Returning space fact")
+        return await get_space_fact_response(params.message)  # Use existing function
+    elif command == "random image":
+        print("DEBUG: Returning random NASA image")
+        nasa_data = await get_random_apod_data()
+    elif command == "yesterday's image":
+        print("DEBUG: Returning yesterday's NASA image")
+        nasa_data = await get_yesterday_apod_data()
+    elif command == "help":
+        print("DEBUG: Returning help")
+        # Create a simple help response directly
+        help_text = """🛰️ *NASA Space Explorer Commands* 🛰️
+
+Available commands:
+• "today's image" - Today's Astronomy Picture of the Day
+• "random image" - Random space image from NASA's archive
+• "yesterday's image" - Yesterday's astronomy picture
+• "space fact" or "random fact" - Interesting space facts
+• "help" - Show this help message
+
+Try: "today's image" to see today's space wonder! 🚀"""
+        
+        response_message = A2AMessage(
+            role="agent",
+            parts=[MessagePart(kind="text", text=help_text)],
+            messageId=str(uuid4()),
+            taskId=params.message.taskId
+        )
+        
+        return TaskResult(
+            id=params.message.taskId or str(uuid4()),
+            contextId=str(uuid4()),
+            status=TaskStatus(
+                state="completed",
+                message=response_message
+            ),
+            artifacts=[],
+            history=[params.message, response_message]
+        )
+    else:  # today's image (default)
+        print("DEBUG: Returning today's NASA image")
         nasa_data = await get_nasa_apod_data()
     
+    # Make sure create_nasa_response function exists and takes correct parameters
     return await create_nasa_response(nasa_data, params.message)
 async def handle_execute(params: ExecuteParams):
     """Handle execute method (for multiple messages)"""
@@ -453,7 +395,42 @@ async def get_nasa_apod_data(date=None):
     except Exception as e:
         print(f"ERROR fetching NASA data: {e}")
         return get_fallback_response()
-
+async def create_nasa_response(nasa_data, user_message):
+    """Create NASA response - SINGLE VERSION"""
+    response_text = format_nasa_response(nasa_data)
+    
+    response_message = A2AMessage(
+        role="agent",
+        parts=[MessagePart(kind="text", text=response_text)],
+        messageId=str(uuid4()),
+        taskId=user_message.taskId
+    )
+    
+    artifacts = []
+    if nasa_data.get('media_type') == 'image' and nasa_data.get('url'):
+        artifacts.append(Artifact(
+            name="nasa_image",
+            parts=[MessagePart(kind="file", file_url=nasa_data['url'])]
+        ))
+    
+    artifacts.append(Artifact(
+        name="image_title",
+        parts=[MessagePart(kind="text", text=nasa_data.get('title', 'NASA Image'))]
+    ))
+    
+    # Use proper ID from user message
+    task_id = user_message.taskId or str(uuid4())
+    
+    return TaskResult(
+        id=task_id,  # This is now a string
+        contextId=str(uuid4()),
+        status=TaskStatus(
+            state="completed",
+            message=response_message
+        ),
+        artifacts=artifacts,
+        history=[user_message, response_message]
+    )
 def get_fallback_response():
     """Return fallback response when NASA API fails"""
     return {
