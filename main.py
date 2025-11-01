@@ -166,59 +166,103 @@ async def a2a_endpoint(request: Request):
         )
 
 def extract_user_message_from_telex_body(body):
-    """Extract user message from Telex's invalid request format"""
+    """Extract and parse the actual user command from Telex's conversation history"""
     try:
-        # Telex sends message in: body['params']['message']['parts'][0]['text']
         message_parts = body.get('params', {}).get('message', {}).get('parts', [])
         
         for part in message_parts:
             if part.get('kind') == 'text' and part.get('text'):
-                text = part['text']
-                print(f"DEBUG: Raw text from Telex: '{text}'")
+                full_text = part['text']
+                print(f"DEBUG: Full conversation: '{full_text}'")
                 
-                # Look for "random fact" command specifically
-                if "random fact" in text.lower():
-                    return "random fact"
+                # Remove HTML tags
+                import re
+                clean_text = re.sub('<[^<]+?>', '', full_text).strip()
+                print(f"DEBUG: Cleaned text: '{clean_text}'")
                 
-                # Clean up HTML tags and extract the actual user message
-                if '<p>' in text:
-                    import re
-                    clean_text = re.sub('<[^<]+?>', '', text).strip()
-                    # Get the first part before system messages
-                    user_parts = clean_text.split('  ')
-                    if user_parts:
-                        first_part = user_parts[0].strip()
-                        # Check if it's a valid command
-                        if any(cmd in first_part.lower() for cmd in ["random fact", "today", "yesterday", "space"]):
-                            return first_part
+                # Extract the LATEST user message (most recent command)
+                # Split by common separators and get the last meaningful part
+                parts = re.split(r'\s{2,}', clean_text)  # Split by multiple spaces
+                if parts:
+                    latest_part = parts[-1].strip().lower()
+                    print(f"DEBUG: Latest part: '{latest_part}'")
+                    
+                    # Parse the actual command
+                    if "random fact" in latest_part or "space fact" in latest_part:
+                        return "space fact"
+                    elif "random" in latest_part and "image" in latest_part:
+                        return "random image" 
+                    elif "yesterday" in latest_part:
+                        return "yesterday's image"
+                    elif "today" in latest_part or "astronomy picture" in latest_part:
+                        return "today's image"
+                    elif "help" in latest_part:
+                        return "help"
                 
-                # If no HTML, return the clean text
-                else:
-                    return text.strip()
+                # Fallback: check the entire text
+                if "random fact" in clean_text or "space fact" in clean_text:
+                    return "space fact"
+                elif "random image" in clean_text:
+                    return "random image"
+                elif "yesterday" in clean_text:
+                    return "yesterday's image"
+                elif any(word in clean_text for word in ["today", "astronomy", "nasa image"]):
+                    return "today's image"
         
-        return "today's image"  # Default fallback
+        # Default to today's image
+        return "today's image"
         
     except Exception as e:
-        print(f"Error extracting message: {e}")
-        return "today's image"  # Default fallback
+        print(f"Error: {e}")
+        return "today's image"
+async def create_help_response(request_id):
+    """Create help response with available commands"""
+    help_text = """🛰️ *NASA Space Explorer Commands* 🛰️
+
+Available commands:
+• "today's image" - Today's Astronomy Picture of the Day
+• "random image" - Random space image from NASA's archive
+• "yesterday's image" - Yesterday's astronomy picture
+• "space fact" or "random fact" - Interesting space facts
+• "help" - Show this help message
+
+Try: "today's image" to see today's space wonder! 🚀"""
+    
+    response_message = A2AMessage(
+        role="agent",
+        parts=[MessagePart(kind="text", text=help_text)],
+        messageId=str(uuid4()),
+        taskId=None
+    )
+    
+    return TaskResult(
+        id=request_id,
+        contextId=str(uuid4()),
+        status=TaskStatus(
+            state="completed",
+            message=response_message
+        ),
+        artifacts=[],
+        history=[response_message]
+    )
 async def process_message_directly(user_message, request_id):
-    """Process message directly when Telex sends invalid format"""
-    user_text = user_message.lower().strip()
+    """Process the actual user command"""
+    print(f"DEBUG: Processing command: '{user_message}'")
     
-    print(f"Processing direct message: '{user_text}'")
-    
-    # Check for "random fact" FIRST
-    if "random fact" in user_text:
+    if user_message == "space fact":
         print("DEBUG: Returning space fact")
         return await create_space_fact_response(request_id)
-    elif "fact" in user_text:
-        print("DEBUG: Returning space fact (fallback)")
-        return await create_space_fact_response(request_id)
-    elif "random" in user_text and "fact" not in user_text:
+    elif user_message == "random image":
+        print("DEBUG: Returning random NASA image")
         nasa_data = await get_random_apod_data()
-    elif "yesterday" in user_text:
+    elif user_message == "yesterday's image":
+        print("DEBUG: Returning yesterday's NASA image")
         nasa_data = await get_yesterday_apod_data()
-    else:
+    elif user_message == "help":
+        print("DEBUG: Returning help")
+        return await create_help_response(request_id)
+    else:  # today's image (default)
+        print("DEBUG: Returning today's NASA image")
         nasa_data = await get_nasa_apod_data()
     
     return await create_nasa_response(nasa_data, request_id)
