@@ -166,54 +166,43 @@ async def a2a_endpoint(request: Request):
         )
 
 def extract_user_message_from_telex_body(body):
-    """Extract and parse the actual user command from Telex's conversation history"""
+    """Extract user command - WITH FORCEFUL DEBUGGING"""
     try:
+        print("=== DEBUG: Starting extraction ===")
         message_parts = body.get('params', {}).get('message', {}).get('parts', [])
+        print(f"DEBUG: Found {len(message_parts)} message parts")
         
-        for part in message_parts:
+        for i, part in enumerate(message_parts):
+            print(f"DEBUG: Part {i}: kind={part.get('kind')}, text={part.get('text')}")
+            
             if part.get('kind') == 'text' and part.get('text'):
-                full_text = part['text']
-                print(f"DEBUG: Full conversation: '{full_text}'")
+                text = part['text'].lower()
+                print(f"DEBUG: Processing text: '{text}'")
                 
-                # Remove HTML tags
-                import re
-                clean_text = re.sub('<[^<]+?>', '', full_text).strip()
-                print(f"DEBUG: Cleaned text: '{clean_text}'")
-                
-                # Extract the LATEST user message (most recent command)
-                # Split by common separators and get the last meaningful part
-                parts = re.split(r'\s{2,}', clean_text)  # Split by multiple spaces
-                if parts:
-                    latest_part = parts[-1].strip().lower()
-                    print(f"DEBUG: Latest part: '{latest_part}'")
-                    
-                    # Parse the actual command
-                    if "random fact" in latest_part or "space fact" in latest_part:
-                        return "space fact"
-                    elif "random" in latest_part and "image" in latest_part:
-                        return "random image" 
-                    elif "yesterday" in latest_part:
-                        return "yesterday's image"
-                    elif "today" in latest_part or "astronomy picture" in latest_part:
-                        return "today's image"
-                    elif "help" in latest_part:
-                        return "help"
-                
-                # Fallback: check the entire text
-                if "random fact" in clean_text or "space fact" in clean_text:
+                # FORCEFUL COMMAND DETECTION
+                if "space fact" in text:
+                    print("🚀 DEBUG: FOUND 'space fact' - RETURNING SPACE FACT!")
                     return "space fact"
-                elif "random image" in clean_text:
+                elif "random fact" in text:
+                    print("🚀 DEBUG: FOUND 'random fact' - RETURNING SPACE FACT!")
+                    return "space fact"
+                elif "random image" in text:
+                    print("🚀 DEBUG: FOUND 'random image'")
                     return "random image"
-                elif "yesterday" in clean_text:
+                elif "yesterday" in text:
+                    print("🚀 DEBUG: FOUND 'yesterday'")
                     return "yesterday's image"
-                elif any(word in clean_text for word in ["today", "astronomy", "nasa image"]):
+                elif "today" in text:
+                    print("🚀 DEBUG: FOUND 'today'")
                     return "today's image"
+                else:
+                    print(f"DEBUG: No command found in: '{text}'")
         
-        # Default to today's image
+        print("DEBUG: No command found in any part, defaulting to today's image")
         return "today's image"
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"ERROR in extraction: {e}")
         return "today's image"
 async def create_help_response(request_id):
     """Create help response with available commands"""
@@ -246,11 +235,11 @@ Try: "today's image" to see today's space wonder! 🚀"""
         history=[response_message]
     )
 async def process_message_directly(user_message, request_id):
-    """Process the actual user command"""
-    print(f"DEBUG: Processing command: '{user_message}'")
+    """Process command - WITH CLEAR DEBUG"""
+    print(f"=== DEBUG: Processing command: '{user_message}' ===")
     
     if user_message == "space fact":
-        print("DEBUG: Returning space fact")
+        print("🚀 DEBUG: CONFIRMED - RETURNING SPACE FACT!")
         return await create_space_fact_response(request_id)
     elif user_message == "random image":
         print("DEBUG: Returning random NASA image")
@@ -258,11 +247,8 @@ async def process_message_directly(user_message, request_id):
     elif user_message == "yesterday's image":
         print("DEBUG: Returning yesterday's NASA image")
         nasa_data = await get_yesterday_apod_data()
-    elif user_message == "help":
-        print("DEBUG: Returning help")
-        return await create_help_response(request_id)
-    else:  # today's image (default)
-        print("DEBUG: Returning today's NASA image")
+    else:
+        print("DEBUG: Defaulting to today's NASA image")
         nasa_data = await get_nasa_apod_data()
     
     return await create_nasa_response(nasa_data, request_id)
