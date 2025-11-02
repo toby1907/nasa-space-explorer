@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import requests
 import os
 from uuid import uuid4
 from datetime import datetime, timedelta
@@ -11,6 +10,7 @@ import asyncio
 import aiohttp
 import random
 import json
+import re
 
 # Pydantic Models for A2A Protocol
 class MessagePart(BaseModel):
@@ -25,6 +25,7 @@ class A2AMessage(BaseModel):
     parts: List[MessagePart]
     messageId: str = Field(default_factory=lambda: str(uuid4()))
     taskId: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 class MessageConfiguration(BaseModel):
     blocking: bool = True
@@ -47,7 +48,7 @@ class JSONRPCRequest(BaseModel):
 
 class TaskStatus(BaseModel):
     state: Literal["working", "completed", "input-required", "failed"]
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat() + "Z")
     message: Optional[A2AMessage] = None
 
 class Artifact(BaseModel):
@@ -56,8 +57,8 @@ class Artifact(BaseModel):
     parts: List[MessagePart]
 
 class TaskResult(BaseModel):
-    id: str
-    contextId: str
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    contextId: str = Field(default_factory=lambda: str(uuid4()))
     status: TaskStatus
     artifacts: List[Artifact] = []
     history: List[A2AMessage] = []
@@ -73,7 +74,7 @@ class JSONRPCResponse(BaseModel):
 app = FastAPI(
     title="NASA Space Explorer Agent - A2A Compliant",
     description="A fully A2A protocol compliant NASA Astronomy Picture agent",
-    version="2.5.0"
+    version="4.0.0"
 )
 
 app.add_middleware(
@@ -84,7 +85,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # NASA API Configuration
 NASA_APOD_URL = "https://api.nasa.gov/planetary/apod"
 NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
@@ -93,7 +93,7 @@ NASA_API_KEY = os.getenv("NASA_API_KEY", "DEMO_KEY")
 nasa_cache = {}
 CACHE_DURATION = 3600  # 1 hour
 
-# Pre-defined fallback images with guaranteed working URLs
+# Pre-defined fallback images
 FALLBACK_IMAGES = [
     {
         "title": "Earth from Space",
@@ -108,27 +108,6 @@ FALLBACK_IMAGES = [
         "url": "https://apod.nasa.gov/apod/image/2401/M42M43_Final_Seidel_2048.jpg", 
         "media_type": "image",
         "date": datetime.now().strftime("%Y-%m-%d")
-    },
-    {
-        "title": "Moon Surface",
-        "explanation": "Detailed view of the Moon's surface showing craters, mountains, and the dramatic landscapes of our closest celestial neighbor.",
-        "url": "https://apod.nasa.gov/apod/image/2401/MoonCraters_Bourous_2048.jpg",
-        "media_type": "image",
-        "date": datetime.now().strftime("%Y-%m-%d")
-    },
-    {
-        "title": "Jupiter's Storms",
-        "explanation": "Jupiter's turbulent atmosphere showing the famous Great Red Spot and numerous other storm systems in the gas giant's clouds.",
-        "url": "https://apod.nasa.gov/apod/image/2401/Jupiter_Cassini_1080.jpg",
-        "media_type": "image",
-        "date": datetime.now().strftime("%Y-%m-%d")
-    },
-    {
-        "title": "Andromeda Galaxy",
-        "explanation": "Our nearest galactic neighbor, the Andromeda Galaxy, containing over a trillion stars and spanning 220,000 light years across.",
-        "url": "https://apod.nasa.gov/apod/image/2401/M31_2023_08_07_BCD_1024.jpg",
-        "media_type": "image",
-        "date": datetime.now().strftime("%Y-%m-%d")
     }
 ]
 
@@ -138,16 +117,11 @@ SPACE_FACTS = [
     "There are more stars in the universe than grains of sand on all Earth's beaches!",
     "A teaspoon of neutron star would weigh about 6 billion tons!",
     "Venus is the only planet that spins clockwise!",
-    "The Sun makes up 99.86% of the mass in our solar system!",
-    "Space is completely silent - there's no atmosphere to carry sound!",
-    "The International Space Station orbits Earth every 90 minutes!",
-    "A year on Venus is shorter than a day on Venus!",
-    "There is a giant cloud of alcohol in Sagittarius B that contains billions of liters of vodka!"
 ]
 
 @app.post("/a2a/nasa")
 async def a2a_endpoint(request: Request):
-    """A2A endpoint that handles both valid and invalid data formats"""
+    """A2A endpoint that matches the working agent format exactly"""
     try:
         body = await request.json()
         
@@ -167,51 +141,12 @@ async def a2a_endpoint(request: Request):
         
         request_id = body.get("id", "unknown")
         
-        try:
-            # First try to parse with strict validation
-            rpc_request = JSONRPCRequest(**body)
-            print(f"DEBUG: Valid JSON-RPC request - method: {rpc_request.method}")
-            
-            # Process based on method using the proper objects
-            if rpc_request.method == "message/send":
-                result = await handle_message_send_proper(rpc_request.params, request_id)
-            elif rpc_request.method == "execute":
-                result = await handle_execute_proper(rpc_request.params, request_id)
-            else:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {
-                            "code": -32601,
-                            "message": f"Method not found: {rpc_request.method}"
-                        }
-                    }
-                )
-                
-        except Exception as e:
-            print(f"DEBUG: Validation failed, using fallback: {e}")
-            # Use fallback parsing for Telex's non-standard format
-            method = body.get("method", "message/send")
-            params = body.get("params", {})
-            
-            if method == "message/send":
-                result = await handle_message_send_fallback(params, request_id)
-            elif method == "execute":
-                result = await handle_execute_fallback(params, request_id)
-            else:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {
-                            "code": -32601,
-                            "message": f"Method not found: {method}"
-                        }
-                    }
-                )
+        # Extract user message from the request
+        user_message = extract_user_message_from_request(body)
+        print(f"🚀 DETECTED COMMAND: '{user_message}'")
+        
+        # Process the command and get response
+        result = await process_user_command(user_message, request_id, body)
         
         response = JSONRPCResponse(
             id=request_id,
@@ -235,298 +170,119 @@ async def a2a_endpoint(request: Request):
             }
         )
 
-async def handle_message_send_proper(params: MessageParams, request_id: str):
-    """Handle message/send with proper Pydantic objects"""
-    print("=== DEBUG: handle_message_send_proper called ===")
-    
-    # Extract user message from the proper MessageParams object
-    user_message = extract_user_message_from_proper_params(params)
-    print(f"🚀 DEBUG: EXTRACTED USER MESSAGE: '{user_message}'")
-    
-    # Process the command
-    return await process_user_command(user_message, request_id)
-
-async def handle_execute_proper(params: ExecuteParams, request_id: str):
-    """Handle execute with proper Pydantic objects"""
-    if params.messages:
-        # Use the last message
-        last_message = params.messages[-1]
-        user_message = extract_user_message_from_a2a_message(last_message)
-    else:
-        user_message = "today's image"
-    
-    return await process_user_command(user_message, request_id)
-
-async def handle_message_send_fallback(params: dict, request_id: str):
-    """Handle message/send with fallback parsing for dict params"""
-    print("=== DEBUG: handle_message_send_fallback called ===")
-    
-    # Extract user message from dictionary params
-    user_message = extract_user_message_robust(params)
-    print(f"🚀 DEBUG: EXTRACTED USER MESSAGE: '{user_message}'")
-    
-    # Process the command
-    return await process_user_command(user_message, request_id)
-
-async def handle_execute_fallback(params: dict, request_id: str):
-    """Handle execute with fallback parsing for dict params"""
-    messages = params.get('messages', [])
-    if messages:
-        # Use the last message
-        last_message = messages[-1]
-        user_message = extract_user_message_from_dict_message(last_message)
-    else:
-        user_message = "today's image"
-    
-    return await process_user_command(user_message, request_id)
-
-def extract_user_message_from_proper_params(params: MessageParams) -> str:
-    """Extract user message from proper MessageParams object"""
+def extract_user_message_from_request(body: dict) -> str:
+    """Extract user message from request body - SIMPLIFIED"""
     try:
-        parts = params.message.parts
-        print(f"DEBUG: Found {len(parts)} parts in proper params")
+        params = body.get('params', {})
+        message = params.get('message', {})
+        parts = message.get('parts', [])
         
-        all_texts = []
-        for i, part in enumerate(parts):
-            print(f"DEBUG: Part {i} - kind: {part.kind}, text: {part.text[:200] if part.text else 'None'}")
-            
-            # Direct text part
-            if part.kind == 'text' and part.text and part.text.strip():
-                all_texts.append(part.text)
-                clean_text = clean_user_input(part.text)
-                if clean_text:
-                    print(f"🚀 DEBUG: EXTRACTED COMMAND: '{clean_text}'")
-                    return clean_text
-            
-            # Data part that might contain text
-            if part.kind == 'data' and part.data:
-                print(f"DEBUG: Processing data part: {part.data}")
-                if isinstance(part.data, list):
-                    for data_item in part.data:
-                        if isinstance(data_item, dict) and data_item.get('kind') == 'text':
-                            text_content = data_item.get('text', '')
-                            if text_content and text_content.strip():
-                                all_texts.append(text_content)
-                                clean_text = clean_user_input(text_content)
-                                if clean_text:
-                                    print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA: '{clean_text}'")
-                                    return clean_text
-                elif isinstance(part.data, str):
-                    all_texts.append(part.data)
-                    clean_text = clean_user_input(part.data)
-                    if clean_text:
-                        print(f"🚀 DEBUG: EXTRACTED COMMAND FROM DATA STRING: '{clean_text}'")
-                        return clean_text
+        # Look for the most recent user message in data parts
+        for part in parts:
+            if part.get('kind') == 'data' and part.get('data'):
+                data_items = part['data']
+                if isinstance(data_items, list):
+                    # Look for the last user message (most recent)
+                    for item in reversed(data_items):
+                        if (isinstance(item, dict) and 
+                            item.get('kind') == 'text' and 
+                            item.get('text') and
+                            not is_bot_response(item.get('text', ''))):
+                            text = item['text'].strip()
+                            if text and text.startswith('<p>') and text.endswith('</p>'):
+                                # Extract clean command from HTML
+                                clean_text = re.sub('<[^<]+?>', '', text).strip()
+                                command = detect_command(clean_text)
+                                if command:
+                                    return command
         
-        print(f"DEBUG: All texts found: {all_texts}")
-        # Default fallback
         return "today's image"
             
     except Exception as e:
-        print(f"ERROR in proper params extraction: {e}")
+        print(f"Error extracting message: {e}")
         return "today's image"
 
-def extract_user_message_robust(params: dict) -> str:
-    """Extract user message from params with robust parsing"""
-    try:
-        message_data = params.get('message', {})
-        parts = message_data.get('parts', [])
-        
-        print(f"DEBUG: Found {len(parts)} parts in message")
-        
-        # Look for text in parts
-        for i, part in enumerate(parts):
-            part_kind = part.get('kind', '')
-            part_text = part.get('text', '')
-            part_data = part.get('data')
-            
-            print(f"DEBUG: Part {i} - kind: {part_kind}, text: {part_text[:100] if part_text else 'None'}")
-            
-            # Direct text part
-            if part_kind == 'text' and part_text and part_text.strip():
-                clean_text = clean_user_input(part_text)
-                if clean_text:
-                    return clean_text
-            
-            # Data part that might contain text
-            if part_kind == 'data' and part_data:
-                if isinstance(part_data, list):
-                    for data_item in part_data:
-                        if isinstance(data_item, dict) and data_item.get('kind') == 'text':
-                            text_content = data_item.get('text', '')
-                            if text_content and text_content.strip():
-                                clean_text = clean_user_input(text_content)
-                                if clean_text:
-                                    return clean_text
-                elif isinstance(part_data, str):
-                    clean_text = clean_user_input(part_data)
-                    if clean_text:
-                        return clean_text
-        
-        # If we get here, try to find any text in the entire params structure
-        params_str = json.dumps(params)
-        if 'today' in params_str.lower():
-            return "today's image"
-        elif 'space fact' in params_str.lower() or 'random fact' in params_str.lower():
-            return "space fact"
-        elif 'random image' in params_str.lower():
-            return "random image"
-        elif 'yesterday' in params_str.lower():
-            return "yesterday's image"
-        elif 'help' in params_str.lower():
-            return "help"
-            
-    except Exception as e:
-        print(f"ERROR in message extraction: {e}")
-    
-    # Default fallback
-    return "today's image"
+def is_bot_response(text: str) -> bool:
+    """Check if text is a bot response"""
+    bot_indicators = ['fetching', 'here\'s', 'view image', 'click the link', 'astronomy picture']
+    return any(indicator in text.lower() for indicator in bot_indicators)
 
-def extract_user_message_from_a2a_message(message: A2AMessage) -> str:
-    """Extract user message from A2A message object"""
-    parts = message.parts
-    for part in parts:
-        if part.kind == 'text' and part.text:
-            clean_text = clean_user_input(part.text)
-            if clean_text:
-                return clean_text
-    return "today's image"
-
-def extract_user_message_from_dict_message(message: dict) -> str:
-    """Extract user message from dictionary message"""
-    parts = message.get('parts', [])
-    for part in parts:
-        if part.get('kind') == 'text' and part.get('text'):
-            clean_text = clean_user_input(part['text'])
-            if clean_text:
-                return clean_text
-    return "today's image"
-
-def clean_user_input(text: str) -> str:
-    """Clean and normalize user input text - FIXED VERSION"""
-    if not text or not text.strip():
-        return ""
+def detect_command(text: str) -> str:
+    """Detect command from clean text"""
+    clean_text = text.lower().strip()
     
-    # Remove HTML tags and extra whitespace
-    import re
-    clean_text = re.sub('<[^<]+?>', '', text)  # Remove HTML tags
-    clean_text = ' '.join(clean_text.split())  # Normalize whitespace
-    clean_text = clean_text.strip()
-    
-    print(f"DEBUG: Raw text: '{text}' -> Cleaned: '{clean_text}'")
-    
-    # Handle the specific case of repeated "test image" commands
-    clean_text_lower = clean_text.lower()
-    
-    # Check for exact matches first
-    if 'test image' in clean_text_lower:
-        print("DEBUG: Detected 'test image' command")
-        return "test image"
-    elif 'space fact' in clean_text_lower or 'random fact' in clean_text_lower:
-        print("DEBUG: Detected 'space fact' command")
+    if any(cmd in clean_text for cmd in ['space fact', 'random fact']):
         return "space fact"
-    elif 'random image' in clean_text_lower:
-        print("DEBUG: Detected 'random image' command")
+    elif 'random image' in clean_text:
         return "random image"
-    elif 'yesterday' in clean_text_lower:
-        print("DEBUG: Detected 'yesterday's image' command")
+    elif 'yesterday' in clean_text:
         return "yesterday's image"
-    elif 'today' in clean_text_lower:
-        print("DEBUG: Detected 'today's image' command")
+    elif 'today' in clean_text:
         return "today's image"
-    elif 'help' in clean_text_lower:
-        print("DEBUG: Detected 'help' command")
+    elif 'help' in clean_text:
         return "help"
+    elif 'test' in clean_text:
+        return "test image"
     
-    # If no specific command found, default to today's image
-    print("DEBUG: No specific command detected, defaulting to today's image")
-    return "today's image"
+    return ""
 
-async def process_user_command(command: str, request_id: str):
-    """Process user command and return appropriate response"""
-    print(f"🚀 PROCESSING COMMAND: '{command}'")
+async def process_user_command(command: str, request_id: str, original_body: dict):
+    """Process user command and return response in correct format"""
+    print(f"🚀 PROCESSING: '{command}'")
     
     if command == "space fact":
-        return await create_space_fact_response(request_id)
+        response_data = await create_space_fact_data()
     elif command == "random image":
-        nasa_data = await get_random_apod_data()
+        response_data = await get_random_apod_data()
     elif command == "yesterday's image":
-        nasa_data = await get_yesterday_apod_data()
+        response_data = await get_yesterday_apod_data()
     elif command == "help":
-        return await create_help_response(request_id)
+        response_data = create_help_data()
     elif command == "test image":
-        nasa_data = random.choice(FALLBACK_IMAGES)
+        response_data = random.choice(FALLBACK_IMAGES)
     else:  # today's image (default)
-        nasa_data = await get_nasa_apod_data()
+        response_data = await get_nasa_apod_data()
     
-    return await create_nasa_response(nasa_data, request_id)
+    return await create_response_in_correct_format(response_data, request_id, original_body)
 
 async def get_nasa_apod_data(date=None):
-    """Fetch NASA APOD data with better timeout handling and caching"""
+    """Fetch NASA APOD data"""
     cache_key = f"apod_{date}" if date else "apod_today"
     
-    # Check cache first
     if cache_key in nasa_cache:
         cache_time, cached_data = nasa_cache[cache_key]
         if (datetime.now() - cache_time).total_seconds() < CACHE_DURATION:
-            print(f"DEBUG: Using cached data for {cache_key}")
             return cached_data
     
     try:
         url = f"{NASA_APOD_URL}?api_key={NASA_API_KEY}"
         if date:
             url += f"&date={date}"
-            
-        print(f"DEBUG: Calling NASA API: {url}")
         
-        # Shorter timeout for faster fallback
         timeout = aiohttp.ClientTimeout(total=8)
         
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     data = await response.json()
-                    print(f"DEBUG: NASA API success - Title: {data.get('title')}")
-                    # Ensure we have proper image URLs
-                    if data.get('media_type') == 'image':
-                        if not data.get('hdurl'):
-                            data['hdurl'] = data.get('url', '')
-                    # Cache the successful response
                     nasa_cache[cache_key] = (datetime.now(), data)
                     return data
                 else:
-                    print(f"DEBUG: NASA API error: {response.status}")
                     return get_fallback_response()
                 
-    except asyncio.TimeoutError:
-        print("DEBUG: NASA API timeout - using fallback")
-        return get_fallback_response()
-    except Exception as e:
-        print(f"DEBUG: NASA API exception: {e}")
+    except Exception:
         return get_fallback_response()
 
 async def get_random_apod_data():
-    """Get random APOD from archive with caching"""
-    cache_key = "apod_random"
-    
-    if cache_key in nasa_cache:
-        cache_time, cached_data = nasa_cache[cache_key]
-        if (datetime.now() - cache_time).total_seconds() < CACHE_DURATION:
-            return cached_data
-    
+    """Get random APOD from archive"""
     try:
-        # NASA APOD started June 16, 1995
         start_date = datetime(1995, 6, 16)
         end_date = datetime.now() - timedelta(days=1)
         random_date = start_date + timedelta(
             days=random.randint(0, (end_date - start_date).days)
         )
-        
-        data = await get_nasa_apod_data(random_date.strftime("%Y-%m-%d"))
-        nasa_cache[cache_key] = (datetime.now(), data)
-        return data
-    except Exception as e:
-        print(f"DEBUG: Random APOD error: {e}")
+        return await get_nasa_apod_data(random_date.strftime("%Y-%m-%d"))
+    except Exception:
         return random.choice(FALLBACK_IMAGES)
 
 async def get_yesterday_apod_data():
@@ -538,163 +294,171 @@ def get_fallback_response():
     """Return random fallback response"""
     return random.choice(FALLBACK_IMAGES)
 
-async def create_nasa_response(nasa_data, request_id):
-    """Create NASA response with clickable image URL in text"""
-    response_text = format_nasa_response(nasa_data)
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=response_text)],
-        messageId=str(uuid4()),
-        taskId=request_id
-    )
-    
-    # Still include artifacts for compatibility, but focus on text response
-    artifacts = []
-    image_url = nasa_data.get('url', '')
-    
-    if nasa_data.get('media_type') == 'image' and image_url:
-        artifacts.append(Artifact(
-            name="nasa_image",
-            parts=[MessagePart(kind="file", file_url=image_url)]
-        ))
-    
-    return TaskResult(
-        id=request_id,
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=artifacts,
-        history=[response_message]
-    )
+async def create_space_fact_data():
+    """Create space fact data"""
+    return {
+        "type": "space_fact",
+        "content": random.choice(SPACE_FACTS),
+        "title": "Space Fact"
+    }
 
-async def create_space_fact_response(request_id):
-    """Create space fact response"""
-    fact = random.choice(SPACE_FACTS)
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=f"🌌 *Space Fact* 🌌\n\n{fact}")],
-        messageId=str(uuid4()),
-        taskId=request_id
-    )
-    
-    return TaskResult(
-        id=request_id,
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=[
-            Artifact(
-                name="space_fact",
-                parts=[MessagePart(kind="text", text=fact)]
-            )
-        ],
-        history=[response_message]
-    )
+def create_help_data():
+    """Create help data"""
+    return {
+        "type": "help",
+        "content": """🛰️ *NASA Space Explorer Commands* 🛰️
 
-async def create_help_response(request_id):
-    """Create help response"""
-    help_text = """🛰️ *NASA Space Explorer Commands* 🛰️
-
-Available commands:
-• "today's image" - Today's Astronomy Picture of the Day
+**Available Commands:**
+• "today's image" - Today's Astronomy Picture of the Day  
 • "random image" - Random space image from NASA's archive
 • "yesterday's image" - Yesterday's astronomy picture
 • "space fact" or "random fact" - Interesting space facts
 • "help" - Show this help message
 
-Try: "today's image" to see today's space wonder! 🚀"""
-    
-    response_message = A2AMessage(
-        role="agent",
-        parts=[MessagePart(kind="text", text=help_text)],
-        messageId=str(uuid4()),
-        taskId=request_id
-    )
-    
-    return TaskResult(
-        id=request_id,
-        contextId=str(uuid4()),
-        status=TaskStatus(
-            state="completed",
-            message=response_message
-        ),
-        artifacts=[],
-        history=[response_message]
-    )
+**Try:** "today's image" to see today's space wonder! 🚀"""
+    }
 
-def format_nasa_response(data):
-    """Format NASA data into nice response with clickable image URL"""
-    title = data.get('title', 'Unknown Title')
-    explanation = data.get('explanation', 'No description available.')
-    date = data.get('date', 'Unknown date')
-    image_url = data.get('url', '')
+async def create_response_in_correct_format(response_data, request_id: str, original_body: dict):
+    """Create response in the EXACT format that works with Telex"""
     
-    # Truncate long explanations
-    if len(explanation) > 500:
-        explanation = explanation[:500] + "..."
-    
-    response_text = f"""🛰️ **{title}** 🛰️
+    # Generate response text based on data type
+    if response_data.get('type') == 'space_fact':
+        response_text = f"🌌 *Space Fact* 🌌\n\n{response_data['content']}\n\n*Learn something new every day!* 🚀"
+    elif response_data.get('type') == 'help':
+        response_text = response_data['content']
+    else:
+        # NASA image response
+        title = response_data.get('title', 'Unknown Title')
+        explanation = response_data.get('explanation', 'No description available.')
+        date = response_data.get('date', 'Unknown date')
+        image_url = response_data.get('url', '')
+        
+        if len(explanation) > 500:
+            explanation = explanation[:500] + "..."
+        
+        response_text = f"""🛰️ **{title}** 🛰️
 
 {explanation}
 
 **Date:** {date}
-**Type:** {data.get('media_type', 'image')}"""
+**Type:** {response_data.get('media_type', 'image')}"""
 
-    # Always include clickable image URL prominently
-    if data.get('media_type') == 'image' and image_url:
-        response_text += f"\n\n📸 **View Image:** {image_url}"
-        response_text += f"\n\n🔗 **Click the link above to view the image!**"
-    else:
-        response_text += f"\n\n📺 **Video URL:** {image_url}"
-        response_text += f"\n\n🔗 **Click the link above to watch the video!**"
+        if response_data.get('media_type') == 'image' and image_url:
+            response_text += f"\n\n📸 **View Image:** {image_url}"
+            response_text += f"\n\n🔗 **Click the link above to view the image!**"
+        
+        response_text += "\n\n*Explore the cosmos!* 🚀"
+
+    # Create the main response message (EXACT format from working agent)
+    response_message = A2AMessage(
+        role="agent",
+        parts=[
+            MessagePart(
+                kind="text",
+                text=response_text,
+                data=None,
+                file_url=None
+            )
+        ],
+        messageId=str(uuid4()),
+        taskId=str(uuid4()),  # Different from request_id like in working example
+        metadata=None
+    )
+
+    # Create artifacts with the SAME text as message (like working example)
+    artifacts = [
+        Artifact(
+            artifactId=str(uuid4()),
+            name="nasa_response",
+            parts=[
+                MessagePart(
+                    kind="text",
+                    text=response_text,  # SAME text as in message
+                    data=None,
+                    file_url=None
+                )
+            ]
+        )
+    ]
+
+    # Build history from the original request (like working example does)
+    history = await build_conversation_history(original_body, response_message)
+
+    # Create task result with EXACT same structure as working example
+    result = TaskResult(
+        id=str(uuid4()),  # Different from request_id like in working example
+        contextId=str(uuid4()),
+        status=TaskStatus(
+            state="completed",
+            timestamp=datetime.utcnow().isoformat() + "Z",  # Note the Z at end
+            message=response_message
+        ),
+        artifacts=artifacts,
+        history=history,
+        kind="task"
+    )
+
+    return result
+
+async def build_conversation_history(original_body: dict, current_response: A2AMessage) -> List[A2AMessage]:
+    """Build conversation history from original request"""
+    history = []
     
-    response_text += "\n\n*Explore the cosmos!* 🚀"
+    try:
+        params = original_body.get('params', {})
+        original_message = params.get('message', {})
+        original_parts = original_message.get('parts', [])
+        
+        # Extract previous messages from data parts
+        for part in original_parts:
+            if part.get('kind') == 'data' and part.get('data'):
+                data_items = part['data']
+                if isinstance(data_items, list):
+                    for item in data_items:
+                        if isinstance(item, dict) and item.get('kind') == 'text' and item.get('text'):
+                            text = item['text']
+                            # Determine role based on content
+                            if text.startswith('<p>') and text.endswith('</p>'):
+                                # User message
+                                clean_text = re.sub('<[^<]+?>', '', text).strip()
+                                history.append(A2AMessage(
+                                    role="user",
+                                    parts=[MessagePart(kind="text", text=clean_text)],
+                                    messageId=str(uuid4()),
+                                    taskId=None,
+                                    metadata=None
+                                ))
+                            else:
+                                # Assume agent message for non-HTML text
+                                history.append(A2AMessage(
+                                    role="agent", 
+                                    parts=[MessagePart(kind="text", text=text)],
+                                    messageId=str(uuid4()),
+                                    taskId=None,
+                                    metadata=None
+                                ))
+        
+        # Add current response to history
+        history.append(current_response)
+        
+    except Exception as e:
+        print(f"Error building history: {e}")
+        # Fallback: just add current response
+        history = [current_response]
     
-    return response_text
+    return history
 
 @app.get("/")
 async def root():
     return {
-        "message": "NASA Space Explorer Agent is running!",
+        "message": "NASA Space Explorer Agent - UPDATED FORMAT",
         "status": "healthy", 
-        "version": "2.5.0",
-        "protocol": "A2A Compliant",
-        "features": {
-            "caching": "Enabled (1 hour)",
-            "fallback_images": f"{len(FALLBACK_IMAGES)} available",
-            "timeout": "8 seconds",
-            "space_facts": f"{len(SPACE_FACTS)} available",
-            "image_display": "Clickable URLs in text"
-        }
+        "version": "4.0.0"
     }
 
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "NASA Space Explorer Agent"}
-
-@app.get("/test")
-async def test_endpoint():
-    """Test endpoint to verify NASA API connection"""
-    try:
-        data = await get_nasa_apod_data()
-        return {
-            "nasa_api_status": "connected",
-            "agent_status": "healthy", 
-            "cache_size": len(nasa_cache),
-            "sample_data": {
-                "title": data.get('title'),
-                "media_type": data.get('media_type'),
-                "has_image": data.get('media_type') == 'image'
-            }
-        }
-    except Exception as e:
-        return {"nasa_api_status": "error", "error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
